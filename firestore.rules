@@ -1,0 +1,142 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isVerifiedHallymUser() {
+      return request.auth != null
+          && request.auth.token.email_verified == true
+          && request.auth.token.email.matches('.*@hallym[.]ac[.]kr$');
+    }
+
+    function otherParticipant(participants) {
+      return participants[0] == request.auth.uid ? participants[1] : participants[0];
+    }
+
+    // 클라이언트가 조작되어 잘못된 타입의 필드를 써도 다른 사용자의 홈 피드가
+    // 캐스팅 오류로 깨지지 않도록, 서버 측에서 최소한의 타입을 검증한다.
+    function isValidItemData(data) {
+      return data.title is string
+          && data.description is string
+          && data.location is string
+          && data.locationDetail is string
+          && data.type is string
+          && data.category is string
+          && data.authorNickname is string
+          && data.resolved is bool
+          && data.imageUrls is list;
+    }
+
+    // 둘 중 누구라도 상대를 차단했으면 true. 차단은 양방향으로 작동해야 하므로
+    // "상대가 나를 차단" / "내가 상대를 차단" 두 경우를 모두 확인한다.
+    function isBlockRelated(participants) {
+      let other = otherParticipant(participants);
+      return (exists(/databases/$(database)/documents/blocks/$(other))
+              && request.auth.uid in get(/databases/$(database)/documents/blocks/$(other)).data.blockedUsers)
+          || (exists(/databases/$(database)/documents/blocks/$(request.auth.uid))
+              && other in get(/databases/$(database)/documents/blocks/$(request.auth.uid)).data.blockedUsers);
+    }
+
+    match /items/{itemId} {
+      // 읽기는 누구나, 쓰기는 한림대 웹메일(@hallym.ac.kr)로 이메일 인증까지 완료한 로그인 사용자만 허용
+      // (클라이언트 폼 검증은 우회 가능하므로 서버 측 규칙에서 도메인을 다시 검증한다)
+      allow read: if true;
+      allow create: if isVerifiedHallymUser()
+                    && request.resource.data.authorUid == request.auth.uid
+                    && isValidItemData(request.resource.data);
+      // 작성자는 자유롭게 수정 가능. 그 외 사용자는 신고 시 reportCount, 조회 시 viewCount만
+      // 1씩 증가시킬 수 있다 (값 위조를 막기 위해 정확히 +1인지 검증한다).
+      allow update: if isVerifiedHallymUser()
+                    && (
+                      (resource.data.authorUid == request.auth.uid
+                       && request.resource.data.authorUid == resource.data.authorUid
+                       && isValidItemData(request.resource.data))
+                      || (
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reportCount'])
+                        && request.resource.data.reportCount ==
+                            (('reportCount' in resource.data) ? resource.data.reportCount : 0) + 1
+                      )
+                      || (
+                        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount'])
+                        && request.resource.data.viewCount ==
+                            (('viewCount' in resource.data) ? resource.data.viewCount : 0) + 1
+                      )
+                    );
+      allow delete: if isVerifiedHallymUser()
+                    && resource.data.authorUid == request.auth.uid;
+    }
+
+    // 신고: 신고자 본인 명의로만 생성 가능. 문서ID를 '{itemId}_{reporterUid}'로 고정해
+    // 같은 사람이 같은 글을 중복 신고할 수 없게 한다(문서가 이미 있으면 create가 아닌
+    // update로 취급되어 아래 규칙에 막힌다). 조회/수정/삭제는 클라이언트에 노출하지 않는다.
+    match /reports/{reportId} {
+      allow create: if isVerifiedHallymUser()
+                    && request.resource.data.reporterUid == request.auth.uid
+                    && reportId == request.resource.data.itemId + '_' + request.auth.uid;
+      allow read, update, delete: if false;
+    }
+
+    // 이메일 인증 코드는 Vercel 백엔드(Admin SDK)만 접근한다. 클라이언트 직접 접근은 전면 차단.
+    match /emailVerificationCodes/{uid} {
+      allow read, write: if false;
+    }
+
+    // 비밀번호 재설정 코드도 마찬가지로 Vercel 백엔드(Admin SDK)만 접근한다.
+    match /passwordResetCodes/{uid} {
+      allow read, write: if false;
+    }
+
+    // 실명/학과/학번 등 민감 정보는 본인만 조회/생성/삭제(회원탈퇴) 가능하고, 수정은 불가(위변조 방지).
+    match /userPrivate/{uid} {
+      allow read, create, delete: if request.auth != null && request.auth.uid == uid;
+      allow update: if false;
+    }
+
+    // 차단 목록: 본인만 조회/수정 가능. { blockedUsers: { uid: nickname } } 형태.
+    match /blocks/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // 채팅방: 참여자 2명만 읽기/쓰기 가능. 둘 중 누구라도 차단한 관계면 새 채팅 생성은 거부한다.
+    match /chats/{chatId} {
+      // 채팅 시작 시 존재 여부를 get()으로 먼저 확인하므로, 문서가 아직 없을 때도 조회는 허용한다.
+      allow get: if request.auth != null
+                 && (!exists(/databases/$(database)/documents/chats/$(chatId))
+                     || request.auth.uid in resource.data.participants);
+      allow list: if request.auth != null && request.auth.uid in resource.data.participants;
+      allow create: if request.auth != null
+                    && request.auth.uid in request.resource.data.participants
+                    && request.resource.data.participants.size() == 2
+                    && !isBlockRelated(request.resource.data.participants);
+      // 업데이트는 대화 진행 중 실제로 바뀌는 필드만 허용한다(참여자/글 정보 등은 생성 후 불변).
+      // clearedAt: 카카오톡 방식 "나가기" — 참여자별로 "이 시점 이전 대화는 내 화면에서 숨김" 마커.
+      allow update: if request.auth != null
+                    && request.auth.uid in resource.data.participants
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['lastMessage', 'lastMessageAt', 'clearedAt', 'lastReadAt', 'revealedRealNames', 'resolutionStatus', 'participantNicknames']);
+      // 회원 탈퇴 시 본인이 속한 채팅방을 정리할 수 있도록 참여자 본인 삭제만 허용한다.
+      allow delete: if request.auth != null && request.auth.uid in resource.data.participants;
+
+      match /messages/{messageId} {
+        allow read: if request.auth != null
+                    && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        allow create: if request.auth != null
+                      && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants
+                      && request.resource.data.senderUid == request.auth.uid
+                      && !isBlockRelated(get(/databases/$(database)/documents/chats/$(chatId)).data.participants);
+        allow update: if false;
+        // 회원 탈퇴 시 본인이 속한 채팅방의 메시지까지 정리할 수 있도록 참여자 본인 삭제만 허용한다.
+        allow delete: if request.auth != null
+                      && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+      }
+    }
+
+    // 알림: 수신자 본인만 읽기/삭제/읽음처리 가능. 생성은 발신자 본인 명의로만 가능.
+    match /notifications/{notificationId} {
+      allow read, update, delete: if request.auth != null
+                                  && resource.data.recipientUid == request.auth.uid;
+      allow create: if request.auth != null
+                    && request.resource.data.senderUid == request.auth.uid;
+    }
+  }
+}

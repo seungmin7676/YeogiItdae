@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "450095922894",
+    "project_id": "yeogi-itdae",
+    "storage_bucket": "yeogi-itdae.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:450095922894:android:d6cb609341b5584471da9f",
+        "android_client_info": {
+          "package_name": "com.example.latte"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB_fHJSS4o-_YUq7aaw1wN5ppoiDtXIG7w"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
