@@ -120,10 +120,14 @@ service cloud.firestore {
       match /messages/{messageId} {
         allow read: if request.auth != null
                     && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        // 차단된 상대에게 보내는 메시지도 쓰기 자체는 허용한다. 발신자에게는
+        // 정상 전송처럼 보이게 하고, 실제로는 수신자(차단한 쪽) 화면에서만
+        // hiddenFromRecipient 플래그로 클라이언트가 걸러낸다 (아래 chats
+        // update 규칙에서도 이 경우 lastMessage가 갱신되지 않아 채팅 목록에
+        // 노출되지 않는다).
         allow create: if request.auth != null
                       && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants
-                      && request.resource.data.senderUid == request.auth.uid
-                      && !isBlockRelated(get(/databases/$(database)/documents/chats/$(chatId)).data.participants);
+                      && request.resource.data.senderUid == request.auth.uid;
         allow update: if false;
         // 회원 탈퇴 시 본인이 속한 채팅방의 메시지까지 정리할 수 있도록 참여자 본인 삭제만 허용한다.
         allow delete: if request.auth != null
