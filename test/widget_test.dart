@@ -5,7 +5,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:latte/main.dart';
+import 'package:latte/theme/app_theme.dart';
+import 'package:latte/widgets/user_avatar.dart';
 
 void main() {
   group('UserAvatar', () {
