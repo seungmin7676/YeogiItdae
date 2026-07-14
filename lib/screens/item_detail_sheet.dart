@@ -536,6 +536,7 @@ class ItemDetailSheet extends StatelessWidget {
           'lastMessage': '',
           'lastMessageAt': FieldValue.serverTimestamp(),
           'lastReadAt': {currentUser.uid: FieldValue.serverTimestamp()},
+          'unreadCount': {currentUser.uid: 0, item.authorUid: 0},
           'resolutionStatus': 'none',
         });
 

@@ -41,12 +41,18 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
+  /// 이메일 입력란에는 "@hallym.ac.kr" 앞부분(학번)만 입력받고, 도메인은
+  /// 화면에 고정 표기해 항상 자동으로 붙인다.
+  String get _fullEmail {
+    final raw = _emailController.text.trim();
+    if (raw.isEmpty) return '';
+    final atIndex = raw.indexOf('@');
+    final localPart = atIndex >= 0 ? raw.substring(0, atIndex) : raw;
+    return '$localPart$kAllowedEmailDomain';
+  }
+
   String? _validateEmail(String? value) {
-    final email = value?.trim() ?? '';
-    if (email.isEmpty) return '이메일을 입력해주세요.';
-    if (!email.toLowerCase().endsWith(kAllowedEmailDomain)) {
-      return '한림대학교 웹메일($kAllowedEmailDomain)만 사용할 수 있습니다.';
-    }
+    if ((value?.trim() ?? '').isEmpty) return '학번을 입력해주세요.';
     return null;
   }
 
@@ -94,7 +100,7 @@ class _LoginScreenState extends State<LoginScreen> {
     }
 
     setState(() => _isSubmitting = true);
-    final email = _emailController.text.trim();
+    final email = _fullEmail;
     final password = _passwordController.text;
 
     try {
@@ -110,6 +116,10 @@ class _LoginScreenState extends State<LoginScreen> {
         final user = credential.user!;
         await user.updateDisplayName(nickname);
         await user.reload();
+        await FirebaseFirestore.instance
+            .collection('userPublicProfiles')
+            .doc(user.uid)
+            .set({'nickname': nickname});
 
         try {
           await FirebaseFirestore.instance
@@ -171,8 +181,7 @@ class _LoginScreenState extends State<LoginScreen> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) =>
-            PasswordResetScreen(initialEmail: _emailController.text.trim()),
+        builder: (context) => PasswordResetScreen(initialEmail: _fullEmail),
       ),
     );
   }
@@ -228,11 +237,11 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 32),
                   TextFormField(
                     controller: _emailController,
-                    keyboardType: TextInputType.emailAddress,
                     validator: _validateEmail,
                     decoration: _inputDecoration(
                       '학교 이메일',
-                      hint: '학번$kAllowedEmailDomain',
+                      hint: '학번',
+                      suffixText: kAllowedEmailDomain,
                     ),
                   ),
                   const SizedBox(height: 14),
@@ -302,17 +311,20 @@ class _LoginScreenState extends State<LoginScreen> {
                         child: Row(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Checkbox(
-                              value: _agreedToPrivacy,
-                              activeColor: AppColors.primary,
-                              visualDensity: VisualDensity.compact,
-                              materialTapTargetSize:
-                                  MaterialTapTargetSize.shrinkWrap,
-                              onChanged: (value) {
-                                setState(
-                                  () => _agreedToPrivacy = value ?? false,
-                                );
-                              },
+                            IgnorePointer(
+                              // 이 체크박스는 순전히 시각적 표시용이다. 탭 처리는
+                              // 바깥 InkWell 하나만 담당한다 — 체크박스가 자체
+                              // onChanged로도 탭을 받으면 정확히 체크박스 위를
+                              // 눌렀을 때 두 콜백이 경합해 두 번 토글되어(상쇄되어)
+                              // 아무 반응도 없는 것처럼 보이는 문제가 있었다.
+                              child: Checkbox(
+                                value: _agreedToPrivacy,
+                                activeColor: AppColors.primary,
+                                visualDensity: VisualDensity.compact,
+                                materialTapTargetSize:
+                                    MaterialTapTargetSize.shrinkWrap,
+                                onChanged: (_) {},
+                              ),
                             ),
                             const SizedBox(width: 8),
                             const Expanded(
@@ -384,6 +396,9 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  InputDecoration _inputDecoration(String label, {required String hint}) =>
-      appInputDecoration(label, hint: hint);
+  InputDecoration _inputDecoration(
+    String label, {
+    required String hint,
+    String? suffixText,
+  }) => appInputDecoration(label, hint: hint, suffixText: suffixText);
 }

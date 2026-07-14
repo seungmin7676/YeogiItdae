@@ -104,6 +104,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             final newNickname = nicknameController.text.trim();
                             await user.updateDisplayName(newNickname);
                             await user.reload();
+                            await FirebaseFirestore.instance
+                                .collection('userPublicProfiles')
+                                .doc(user.uid)
+                                .set({'nickname': newNickname});
                             try {
                               await _propagateNicknameChange(
                                 user.uid,
@@ -251,29 +255,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
       final myItems = await itemsCollection
           .where('authorUid', isEqualTo: user.uid)
           .get();
-      final myChats = await FirebaseFirestore.instance
-          .collection('chats')
-          .where('participants', arrayContains: user.uid)
-          .get();
       final myNotifications = await FirebaseFirestore.instance
           .collection('notifications')
           .where('recipientUid', isEqualTo: user.uid)
           .get();
 
-      // 채팅방 문서만 지우면 messages 서브컬렉션은 Firestore가 자동으로
-      // 지워주지 않으므로, 각 채팅방의 메시지를 먼저 모아서 함께 삭제한다.
-      final messageRefs = <DocumentReference<Map<String, dynamic>>>[];
-      for (final chatDoc in myChats.docs) {
-        final messages = await chatDoc.reference.collection('messages').get();
-        messageRefs.addAll(messages.docs.map((m) => m.reference));
-      }
-
-      // messages는 부모 채팅방 문서가 아직 존재해야 삭제 규칙을 통과하므로,
-      // 여러 청크로 나뉘더라도 항상 채팅방 문서보다 먼저 삭제되도록 앞에 둔다.
+      // chats/messages는 상대방과 공유하는 문서라 여기서 지우지 않는다.
+      // 지우면 상대방 화면에서도 대화 기록 전체가 함께 사라져버린다.
       final refsToDelete = <DocumentReference>[
-        ...messageRefs,
         ...myItems.docs.map((d) => d.reference),
-        ...myChats.docs.map((d) => d.reference),
         ...myNotifications.docs.map((d) => d.reference),
       ];
 

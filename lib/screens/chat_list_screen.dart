@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../widgets/count_badge.dart';
 import '../widgets/feed_message.dart';
 import '../widgets/user_avatar.dart';
 import 'chat_screen.dart';
@@ -106,16 +107,11 @@ class ChatListScreen extends StatelessWidget {
               final lastMessage = data['lastMessage'] as String? ?? '';
               final itemTitle = data['itemTitle'] as String? ?? '';
 
-              final lastReadAt = Map<String, dynamic>.from(
-                data['lastReadAt'] as Map? ?? {},
+              final unreadCountMap = Map<String, dynamic>.from(
+                data['unreadCount'] as Map? ?? {},
               );
-              final myLastRead = lastReadAt[uid] as Timestamp?;
-              final lastMessageAt = data['lastMessageAt'] as Timestamp?;
-              final isUnread =
-                  lastMessage.isNotEmpty &&
-                  lastMessageAt != null &&
-                  (myLastRead == null ||
-                      lastMessageAt.compareTo(myLastRead) > 0);
+              final unreadCount = (unreadCountMap[uid] as num?)?.toInt() ?? 0;
+              final isUnread = unreadCount > 0;
 
               return Card(
                 margin: const EdgeInsets.only(bottom: 12),
@@ -151,16 +147,7 @@ class ChatListScreen extends StatelessWidget {
                       color: isUnread ? AppColors.ink : AppColors.inkMuted,
                     ),
                   ),
-                  trailing: isUnread
-                      ? Container(
-                          width: 10,
-                          height: 10,
-                          decoration: const BoxDecoration(
-                            color: AppColors.primary,
-                            shape: BoxShape.circle,
-                          ),
-                        )
-                      : null,
+                  trailing: isUnread ? CountBadge(count: unreadCount) : null,
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute(
