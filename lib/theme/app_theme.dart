@@ -36,6 +36,7 @@ const LinearGradient kBrandGradient = LinearGradient(
 InputDecoration appInputDecoration(
   String label, {
   String? hint,
+  String? suffixText,
   Widget? prefixIcon,
   Widget? suffixIcon,
 }) {
@@ -46,6 +47,11 @@ InputDecoration appInputDecoration(
   return InputDecoration(
     labelText: label,
     hintText: hint,
+    suffixText: suffixText,
+    suffixStyle: const TextStyle(
+      color: AppColors.inkMuted,
+      fontWeight: FontWeight.w600,
+    ),
     prefixIcon: prefixIcon,
     suffixIcon: suffixIcon,
     filled: true,

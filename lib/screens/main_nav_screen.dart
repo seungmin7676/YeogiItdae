@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../widgets/count_badge.dart';
 import 'chat_list_screen.dart';
 import 'home_feed_screen.dart';
 import 'my_posts_screen.dart';
@@ -19,15 +20,15 @@ class MainNavScreen extends StatefulWidget {
 class _MainNavScreenState extends State<MainNavScreen> {
   int _currentIndex = 0;
 
-  // 채팅 목록 화면(ChatListScreen)의 안읽음 판정 로직과 동일하게,
-  // "나간 뒤 새 메시지 없는 채팅은 제외 + 마지막 메시지가 내가 마지막으로
-  // 읽은 시각보다 나중이면 안읽음"으로 판단한다.
-  bool _hasUnreadChat(
+  // 채팅 목록 화면(ChatListScreen)과 동일한 기준으로, 차단했거나 나간(그 뒤
+  // 새 메시지가 없는) 채팅은 제외하고 나머지 채팅의 안읽은 메시지 수를 합산한다.
+  int _totalUnreadCount(
     List<QueryDocumentSnapshot<Map<String, dynamic>>>? docs,
     String? uid,
     Set<String> blockedUids,
   ) {
-    if (docs == null || uid == null) return false;
+    if (docs == null || uid == null) return 0;
+    var total = 0;
     for (final doc in docs) {
       final data = doc.data();
       // 차단한 상대의 채팅은 새 메시지가 와도 하단 배지에 반영하지 않는다.
@@ -50,18 +51,12 @@ class _MainNavScreenState extends State<MainNavScreen> {
           (lastMessageAt == null || lastMessageAt.compareTo(myClearedAt) <= 0);
       if (isCleared) continue;
 
-      final lastMessage = data['lastMessage'] as String? ?? '';
-      final lastReadAt = Map<String, dynamic>.from(
-        data['lastReadAt'] as Map? ?? {},
+      final unreadCountMap = Map<String, dynamic>.from(
+        data['unreadCount'] as Map? ?? {},
       );
-      final myLastRead = lastReadAt[uid] as Timestamp?;
-      final isUnread =
-          lastMessage.isNotEmpty &&
-          lastMessageAt != null &&
-          (myLastRead == null || lastMessageAt.compareTo(myLastRead) > 0);
-      if (isUnread) return true;
+      total += (unreadCountMap[uid] as num?)?.toInt() ?? 0;
     }
-    return false;
+    return total;
   }
 
   @override
@@ -88,7 +83,7 @@ class _MainNavScreenState extends State<MainNavScreen> {
               .where('participants', arrayContains: uid)
               .snapshots(),
           builder: (context, snapshot) {
-            final hasUnread = _hasUnreadChat(
+            final unreadCount = _totalUnreadCount(
               snapshot.data?.docs,
               uid,
               blockedUids,
@@ -138,20 +133,16 @@ class _MainNavScreenState extends State<MainNavScreen> {
                       label: '내 글',
                     ),
                     NavigationDestination(
-                      icon: Badge(
-                        isLabelVisible: hasUnread,
-                        smallSize: 9,
-                        backgroundColor: AppColors.danger,
-                        child: const Icon(
+                      icon: IconWithCountBadge(
+                        count: unreadCount,
+                        icon: const Icon(
                           Icons.chat_bubble_outline_rounded,
                           color: AppColors.inkMuted,
                         ),
                       ),
-                      selectedIcon: Badge(
-                        isLabelVisible: hasUnread,
-                        smallSize: 9,
-                        backgroundColor: AppColors.danger,
-                        child: const Icon(
+                      selectedIcon: IconWithCountBadge(
+                        count: unreadCount,
+                        icon: const Icon(
                           Icons.chat_bubble_rounded,
                           color: AppColors.primary,
                         ),

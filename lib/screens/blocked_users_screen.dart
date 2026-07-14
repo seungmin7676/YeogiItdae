@@ -66,7 +66,8 @@ class BlockedUsersScreen extends StatelessWidget {
             itemCount: entries.length,
             itemBuilder: (context, index) {
               final otherUid = entries[index].key;
-              final nickname = entries[index].value as String? ?? '알 수 없음';
+              final fallbackNickname =
+                  entries[index].value as String? ?? '알 수 없음';
               return Card(
                 margin: const EdgeInsets.only(bottom: 12),
                 elevation: 0,
@@ -80,9 +81,21 @@ class BlockedUsersScreen extends StatelessWidget {
                     horizontal: 16,
                     vertical: 4,
                   ),
-                  title: Text(
-                    nickname,
-                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  title: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                    stream: FirebaseFirestore.instance
+                        .collection('userPublicProfiles')
+                        .doc(otherUid)
+                        .snapshots(),
+                    builder: (context, profileSnapshot) {
+                      final nickname =
+                          profileSnapshot.data?.data()?['nickname']
+                              as String? ??
+                          fallbackNickname;
+                      return Text(
+                        nickname,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      );
+                    },
                   ),
                   trailing: TextButton(
                     onPressed: uid == null

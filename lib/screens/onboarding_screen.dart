@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../services/onboarding_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/hallym_logo.dart';
-import 'main_nav_screen.dart';
 
 class _OnboardingPage {
   final IconData? icon;
@@ -41,7 +40,13 @@ const List<_OnboardingPage> _kOnboardingPages = [
 
 /// 화면: 앱 최초 실행 시 한 번만 보여주는 사용법 튜토리얼.
 class OnboardingScreen extends StatefulWidget {
-  const OnboardingScreen({super.key});
+  /// 튜토리얼을 마치거나 건너뛰었을 때 호출된다. 이 화면 자체는 라우트를
+  /// 새로 쌓지 않으므로, 호출한 쪽에서 다음 화면으로 전환하는 것을 책임진다
+  /// (그래야 AuthGate의 로그인 상태 스트림과 연결이 끊기지 않아 이후
+  /// 로그아웃 등 인증 상태 변화가 계속 정상적으로 반영된다).
+  final VoidCallback onFinished;
+
+  const OnboardingScreen({super.key, required this.onFinished});
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -50,6 +55,7 @@ class OnboardingScreen extends StatefulWidget {
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final _controller = PageController();
   int _index = 0;
+  bool _dontShowAgain = false;
 
   @override
   void dispose() {
@@ -58,11 +64,13 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _finish() async {
-    await markOnboardingSeen();
+    // 체크하지 않으면 이번엔 그냥 넘어가되, 기록은 남기지 않아 다음
+    // 로그인 때 튜토리얼이 다시 보이게 한다.
+    if (_dontShowAgain) {
+      await markOnboardingSeen();
+    }
     if (!mounted) return;
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (context) => const MainNavScreen()),
-    );
+    widget.onFinished();
   }
 
   void _next() {
@@ -169,7 +177,41 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 );
               }),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 8),
+            InkWell(
+              onTap: () => setState(() => _dontShowAgain = !_dontShowAgain),
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IgnorePointer(
+                      // 탭 처리는 바깥 InkWell 하나만 담당한다(로그인 화면의
+                      // 개인정보 동의 체크박스와 동일한 이유).
+                      child: Checkbox(
+                        value: _dontShowAgain,
+                        activeColor: AppColors.primary,
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize:
+                            MaterialTapTargetSize.shrinkWrap,
+                        onChanged: (_) {},
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    const Text(
+                      '다음부터 보지 않기',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: AppColors.inkMuted,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24),
               child: ElevatedButton(

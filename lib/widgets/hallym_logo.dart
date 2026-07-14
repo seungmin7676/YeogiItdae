@@ -12,6 +12,7 @@ class HallymLogo extends StatelessWidget {
       'assets/branding/hallym_logo.png',
       width: size,
       height: size,
+      semanticLabel: '한림대학교 로고',
     );
   }
 }

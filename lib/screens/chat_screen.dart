@@ -97,7 +97,10 @@ class _ChatScreenState extends State<ChatScreen> {
       await FirebaseFirestore.instance
           .collection('chats')
           .doc(widget.chatId)
-          .update({'lastReadAt.$myUid': FieldValue.serverTimestamp()});
+          .update({
+            'lastReadAt.$myUid': FieldValue.serverTimestamp(),
+            'unreadCount.$myUid': 0,
+          });
     } catch (_) {
       // 읽음 처리 실패는 대화 자체를 막을 정도로 치명적이지 않으므로 조용히 무시한다.
     }
@@ -110,36 +113,29 @@ class _ChatScreenState extends State<ChatScreen> {
     if (user == null) return;
 
     try {
-      await _messagesRef.add({
+      final batch = FirebaseFirestore.instance.batch();
+      final chatRef = FirebaseFirestore.instance
+          .collection('chats')
+          .doc(widget.chatId);
+      batch.set(_messagesRef.doc(), {
         'senderUid': user.uid,
         'type': 'text',
         'text': text,
         'createdAt': FieldValue.serverTimestamp(),
       });
+      batch.update(chatRef, {
+        'lastMessage': text,
+        'lastMessageAt': FieldValue.serverTimestamp(),
+        'lastReadAt.${user.uid}': FieldValue.serverTimestamp(),
+        'unreadCount.${widget.otherUid}': FieldValue.increment(1),
+      });
+      await batch.commit();
       _messageController.clear();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('[메시지 저장 실패] $e')));
-      }
-      return;
-    }
-
-    try {
-      await FirebaseFirestore.instance
-          .collection('chats')
-          .doc(widget.chatId)
-          .update({
-            'lastMessage': text,
-            'lastMessageAt': FieldValue.serverTimestamp(),
-            'lastReadAt.${user.uid}': FieldValue.serverTimestamp(),
-          });
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('[채팅방 갱신 실패] $e')));
+        ).showSnackBar(SnackBar(content: Text('메시지 전송에 실패했습니다: $e')));
       }
     }
   }
@@ -157,20 +153,23 @@ class _ChatScreenState extends State<ChatScreen> {
     setState(() => _isSendingImage = true);
     try {
       final url = await uploadImageToCloudinary(picked);
-      await _messagesRef.add({
+      final batch = FirebaseFirestore.instance.batch();
+      final chatRef = FirebaseFirestore.instance
+          .collection('chats')
+          .doc(widget.chatId);
+      batch.set(_messagesRef.doc(), {
         'senderUid': user.uid,
         'type': 'image',
         'imageUrl': url,
         'createdAt': FieldValue.serverTimestamp(),
       });
-      await FirebaseFirestore.instance
-          .collection('chats')
-          .doc(widget.chatId)
-          .update({
-            'lastMessage': '사진을 보냈습니다',
-            'lastMessageAt': FieldValue.serverTimestamp(),
-            'lastReadAt.${user.uid}': FieldValue.serverTimestamp(),
-          });
+      batch.update(chatRef, {
+        'lastMessage': '사진을 보냈습니다',
+        'lastMessageAt': FieldValue.serverTimestamp(),
+        'lastReadAt.${user.uid}': FieldValue.serverTimestamp(),
+        'unreadCount.${widget.otherUid}': FieldValue.increment(1),
+      });
+      await batch.commit();
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -248,7 +247,10 @@ class _ChatScreenState extends State<ChatScreen> {
       await FirebaseFirestore.instance
           .collection('chats')
           .doc(widget.chatId)
-          .update({'clearedAt.$myUid': FieldValue.serverTimestamp()});
+          .update({
+            'clearedAt.$myUid': FieldValue.serverTimestamp(),
+            'unreadCount.$myUid': 0,
+          });
       navigator.pop();
     } catch (e) {
       if (mounted) {
@@ -506,26 +508,45 @@ class _ChatScreenState extends State<ChatScreen> {
           ],
         ),
         actions: [
-          PopupMenuButton<String>(
-            icon: const Icon(Icons.more_vert),
-            onSelected: (value) {
-              if (value == 'resolve') _requestResolution();
-              if (value == 'reveal') _revealRealName();
-              if (value == 'leave') _leaveChat();
-              if (value == 'block') _blockUser();
+          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: FirebaseFirestore.instance
+                .collection('chats')
+                .doc(widget.chatId)
+                .snapshots(),
+            builder: (context, snapshot) {
+              final myUid = FirebaseAuth.instance.currentUser?.uid;
+              final itemAuthorUid =
+                  snapshot.data?.data()?['itemAuthorUid'] as String?;
+              final isOwner = myUid != null && myUid == itemAuthorUid;
+
+              return PopupMenuButton<String>(
+                icon: const Icon(Icons.more_vert),
+                onSelected: (value) {
+                  if (value == 'resolve') _requestResolution();
+                  if (value == 'reveal') _revealRealName();
+                  if (value == 'leave') _leaveChat();
+                  if (value == 'block') _blockUser();
+                },
+                itemBuilder: (context) => [
+                  // 거래완료 확인 요청은 게시글 작성자만 할 수 있는 동작이라
+                  // 작성자가 아닌 쪽에는 애초에 메뉴 항목을 보여주지 않는다.
+                  if (isOwner)
+                    const PopupMenuItem(
+                      value: 'resolve',
+                      child: Text('거래완료 확인 요청하기'),
+                    ),
+                  const PopupMenuItem(value: 'reveal', child: Text('실명 공개하기')),
+                  const PopupMenuItem(value: 'leave', child: Text('채팅방 나가기')),
+                  const PopupMenuItem(
+                    value: 'block',
+                    child: Text(
+                      '사용자 차단',
+                      style: TextStyle(color: AppColors.danger),
+                    ),
+                  ),
+                ],
+              );
             },
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'resolve', child: Text('거래완료 확인 요청하기')),
-              PopupMenuItem(value: 'reveal', child: Text('실명 공개하기')),
-              PopupMenuItem(value: 'leave', child: Text('채팅방 나가기')),
-              PopupMenuItem(
-                value: 'block',
-                child: Text(
-                  '사용자 차단',
-                  style: TextStyle(color: AppColors.danger),
-                ),
-              ),
-            ],
           ),
         ],
       ),
