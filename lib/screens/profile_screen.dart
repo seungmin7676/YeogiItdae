@@ -1,12 +1,19 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
+import 'package:image_picker/image_picker.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/backend_exception.dart';
+import '../services/cloudinary_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/user_avatar.dart';
 import 'blocked_users_screen.dart';
+import 'notification_settings_screen.dart';
+import 'saved_items_screen.dart';
+import 'saved_searches_screen.dart';
 
 /// 화면: 마이페이지 (닉네임 관리, 차단 관리, 로그아웃, 회원 탈퇴)
 class ProfileScreen extends StatefulWidget {
@@ -18,6 +25,7 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   bool _isDeleting = false;
+  bool _isChangingPhoto = false;
 
   /// 닉네임은 게시글(authorNickname), 채팅방(participantNicknames)에 생성 시점
   /// 스냅샷으로 저장돼 있어 그대로면 과거 기록에 옛 닉네임이 남는다. 내가
@@ -53,6 +61,90 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
+  Future<void> _changePhoto(bool hasPhoto) async {
+    if (_isChangingPhoto) return;
+    final myUid = FirebaseAuth.instance.currentUser?.uid;
+    if (myUid == null) return;
+
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: const Text('카메라로 촬영'),
+              onTap: () => Navigator.pop(context, 'camera'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_outlined),
+              title: const Text('갤러리에서 선택'),
+              onTap: () => Navigator.pop(context, 'gallery'),
+            ),
+            if (hasPhoto)
+              ListTile(
+                leading: const Icon(
+                  Icons.person_remove_outlined,
+                  color: AppColors.danger,
+                ),
+                title: const Text(
+                  '기본 이미지로 변경',
+                  style: TextStyle(color: AppColors.danger),
+                ),
+                onTap: () => Navigator.pop(context, 'remove'),
+              ),
+          ],
+        ),
+      ),
+    );
+    if (action == null || !mounted) return;
+    setState(() => _isChangingPhoto = true);
+
+    final ref = FirebaseFirestore.instance
+        .collection('userPublicProfiles')
+        .doc(myUid);
+
+    try {
+      if (action == 'remove') {
+        try {
+          await ref.set({'photoUrl': ''}, SetOptions(merge: true));
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(SnackBar(content: Text('사진 삭제에 실패했습니다: $e')));
+          }
+        }
+        return;
+      }
+
+      final picked = await ImagePicker().pickImage(
+        source: action == 'camera' ? ImageSource.camera : ImageSource.gallery,
+        imageQuality: 80,
+        maxWidth: 800,
+      );
+      if (picked == null || !mounted) return;
+
+      try {
+        final url = await uploadImageToCloudinary(picked);
+        await ref.set({'photoUrl': url}, SetOptions(merge: true));
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('사진 업로드에 실패했습니다: $e')));
+        }
+      }
+    } finally {
+      if (mounted) setState(() => _isChangingPhoto = false);
+    }
+  }
+
   Future<void> _editNickname() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
@@ -78,6 +170,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 child: TextFormField(
                   controller: nicknameController,
                   autofocus: true,
+                  maxLength: 12,
                   validator: (value) {
                     final v = value?.trim() ?? '';
                     if (v.isEmpty) return '닉네임을 입력해주세요.';
@@ -212,6 +305,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
             TextButton(
               onPressed: () {
                 if (!formKey.currentState!.validate()) return;
+                HapticFeedback.mediumImpact();
                 Navigator.pop(dialogContext, true);
               },
               child: const Text(
@@ -291,6 +385,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
           .collection('blocks')
           .doc(user.uid)
           .delete();
+      await FirebaseFirestore.instance
+          .collection('bookmarks')
+          .doc(user.uid)
+          .delete();
+      await FirebaseFirestore.instance
+          .collection('userPublicProfiles')
+          .doc(user.uid)
+          .delete();
+      await FirebaseFirestore.instance
+          .collection('savedSearches')
+          .doc(user.uid)
+          .delete();
 
       await user.delete();
     } on FirebaseAuthException catch (e) {
@@ -340,24 +446,70 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                   child: Row(
                     children: [
-                      Container(
-                        width: 58,
-                        height: 58,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          gradient: kBrandGradient,
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        child: Text(
-                          (user?.displayName?.trim().isNotEmpty ?? false)
-                              ? user!.displayName!.trim().characters.first
-                              : '?',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 24,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
+                      StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                        stream: FirebaseFirestore.instance
+                            .collection('userPublicProfiles')
+                            .doc(user?.uid ?? '_')
+                            .snapshots(),
+                        builder: (context, snapshot) {
+                          final photoUrl =
+                              snapshot.data?.data()?['photoUrl'] as String?;
+                          return GestureDetector(
+                            onTap: _isChangingPhoto
+                                ? null
+                                : () => _changePhoto(
+                                    photoUrl != null && photoUrl.isNotEmpty,
+                                  ),
+                            child: Stack(
+                              clipBehavior: Clip.none,
+                              children: [
+                                Opacity(
+                                  opacity: _isChangingPhoto ? 0.5 : 1,
+                                  child: UserAvatar(
+                                    nickname: user?.displayName ?? '익명',
+                                    photoUrl: photoUrl,
+                                    size: 58,
+                                  ),
+                                ),
+                                if (_isChangingPhoto)
+                                  const Positioned.fill(
+                                    child: Center(
+                                      child: SizedBox(
+                                        width: 22,
+                                        height: 22,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2.5,
+                                          color: AppColors.primary,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                Positioned(
+                                  right: -2,
+                                  bottom: -2,
+                                  child: Container(
+                                    padding: const EdgeInsets.all(4),
+                                    decoration: const BoxDecoration(
+                                      color: AppColors.primary,
+                                      shape: BoxShape.circle,
+                                      border: Border.fromBorderSide(
+                                        BorderSide(
+                                          color: AppColors.surface,
+                                          width: 2,
+                                        ),
+                                      ),
+                                    ),
+                                    child: const Icon(
+                                      Icons.camera_alt_rounded,
+                                      color: Colors.white,
+                                      size: 12,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
                       ),
                       const SizedBox(width: 16),
                       Expanded(
@@ -395,6 +547,46 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                 ),
                 const SizedBox(height: 20),
+                _ProfileMenuTile(
+                  icon: Icons.bookmark_border_rounded,
+                  label: '찜한 글',
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const SavedItemsScreen(),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                _ProfileMenuTile(
+                  icon: Icons.notifications_active_outlined,
+                  label: '키워드 알림',
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const SavedSearchesScreen(),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
+                _ProfileMenuTile(
+                  icon: Icons.tune_rounded,
+                  label: '알림 설정',
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) =>
+                            const NotificationSettingsScreen(),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
                 _ProfileMenuTile(
                   icon: Icons.block_outlined,
                   label: '차단 관리',

@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../widgets/department_field.dart';
 
 /// 화면: 회원가입 중 실패해 비어있던 프로필(실명/학과/학번)을 다시 입력받는다.
 class CompleteProfileScreen extends StatefulWidget {
@@ -45,11 +46,9 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
   }
 
   String? _validateStudentId(String? value) {
-    final studentId = value?.trim() ?? '';
-    if (studentId.isEmpty) return '학번을 입력해주세요.';
-    if (!RegExp(r'^\d{6,10}$').hasMatch(studentId)) {
-      return '학번은 숫자 6~10자로 입력해주세요.';
-    }
+    // 학번뿐 아니라 교직원 사번도 함께 입력받는 필드라 자릿수가 1~10자로
+    // 다양하다. 형식은 따로 검증하지 않고 입력 여부만 확인한다.
+    if ((value?.trim() ?? '').isEmpty) return '학번을 입력해주세요.';
     return null;
   }
 
@@ -111,10 +110,9 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
                   decoration: appInputDecoration('이름', hint: '실명'),
                 ),
                 const SizedBox(height: 14),
-                TextFormField(
+                DepartmentField(
                   controller: _departmentController,
                   validator: _validateDepartment,
-                  decoration: appInputDecoration('학과', hint: ''),
                 ),
                 const SizedBox(height: 14),
                 TextFormField(

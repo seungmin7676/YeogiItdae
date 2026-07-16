@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../services/backend_exception.dart';
 import '../theme/app_theme.dart';
+import '../widgets/department_field.dart';
 import '../widgets/hallym_logo.dart';
 import 'password_reset_screen.dart';
 
@@ -81,11 +82,9 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   String? _validateStudentId(String? value) {
-    final studentId = value?.trim() ?? '';
-    if (studentId.isEmpty) return '학번을 입력해주세요.';
-    if (!RegExp(r'^\d{6,10}$').hasMatch(studentId)) {
-      return '학번은 숫자 6~10자로 입력해주세요.';
-    }
+    // 학번뿐 아니라 교직원 사번도 함께 입력받는 필드라 자릿수가 1~10자로
+    // 다양하다. 형식은 따로 검증하지 않고 입력 여부만 확인한다.
+    if ((value?.trim() ?? '').isEmpty) return '학번을 입력해주세요.';
     return null;
   }
 
@@ -265,6 +264,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     TextFormField(
                       controller: _nicknameController,
                       validator: _validateNickname,
+                      maxLength: 12,
                       decoration: _inputDecoration(
                         '닉네임',
                         hint: '다른 사용자에게 공개되는 이름',
@@ -277,10 +277,9 @@ class _LoginScreenState extends State<LoginScreen> {
                       decoration: _inputDecoration('이름', hint: '실명'),
                     ),
                     const SizedBox(height: 14),
-                    TextFormField(
+                    DepartmentField(
                       controller: _departmentController,
                       validator: _validateDepartment,
-                      decoration: _inputDecoration('학과', hint: ''),
                     ),
                     const SizedBox(height: 14),
                     TextFormField(

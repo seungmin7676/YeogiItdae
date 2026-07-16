@@ -67,13 +67,13 @@ class _ProfileGate extends StatelessWidget {
         if (snapshot.data?.exists != true) {
           return CompleteProfileScreen(uid: uid, nickname: nickname);
         }
-        return const _OnboardingGate();
+        return _OnboardingGate(uid: uid);
       },
     );
   }
 }
 
-/// 이 기기에서 사용법 튜토리얼을 아직 보지 않았다면 먼저 보여주고,
+/// 이 계정이 사용법 튜토리얼을 아직 보지 않았다면 먼저 보여주고,
 /// 이미 봤다면 곧바로 메인 화면으로 진입한다.
 ///
 /// 튜토리얼 완료 여부는 라우트를 새로 쌓지 않고 이 위젯 내부 상태로만
@@ -81,7 +81,9 @@ class _ProfileGate extends StatelessWidget {
 /// StreamBuilder 트리에서 완전히 떨어져 나가버려, 이후 로그아웃 등으로
 /// 로그인 상태가 바뀌어도 화면이 반응하지 않는 문제가 있었다.
 class _OnboardingGate extends StatefulWidget {
-  const _OnboardingGate();
+  final String uid;
+
+  const _OnboardingGate({required this.uid});
 
   @override
   State<_OnboardingGate> createState() => _OnboardingGateState();
@@ -93,7 +95,7 @@ class _OnboardingGateState extends State<_OnboardingGate> {
   @override
   void initState() {
     super.initState();
-    hasSeenOnboarding().then((seen) {
+    hasSeenOnboarding(widget.uid).then((seen) {
       if (mounted) setState(() => _hasSeen = seen);
     });
   }
@@ -111,6 +113,9 @@ class _OnboardingGateState extends State<_OnboardingGate> {
     if (hasSeen) {
       return const MainNavScreen();
     }
-    return OnboardingScreen(onFinished: () => setState(() => _hasSeen = true));
+    return OnboardingScreen(
+      uid: widget.uid,
+      onFinished: () => setState(() => _hasSeen = true),
+    );
   }
 }

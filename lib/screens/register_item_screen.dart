@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -7,6 +8,8 @@ import 'package:image_picker/image_picker.dart';
 import '../models/lost_found_item.dart';
 import '../services/cloudinary_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/image_source_sheet.dart';
+import '../widgets/searchable_picker_sheet.dart';
 
 /// 화면 B: 분실물/습득물 등록 폼 (editingItem이 있으면 수정 모드)
 class RegisterItemScreen extends StatefulWidget {
@@ -35,45 +38,6 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
 
   int get _totalImageCount => _existingImageUrls.length + _newImages.length;
 
-  static const List<String> _locations = [
-    '(1) 공학관',
-    '(2) 대학본부-인문1관',
-    '(3) 의학관',
-    '(4) 인문2관',
-    '(5) 대학본부별관',
-    '(6) 실험동물센터',
-    '(7) 자연과학관',
-    '(8) 생명과학관',
-    '(9) Campus Life Center',
-    '(10) 사회경영1관',
-    '(11) 일송아트홀',
-    '(12) 창업보육센터',
-    '(13) 사회경영2관',
-    '(14) 국제관',
-    '(15) 국제회의관',
-    '(16) 기초교육관',
-    '(17) 일송창의비전관',
-    '(18) 한림레크리에이션센터',
-    '(19) 학군단',
-    '(20) 실내테니스장',
-    '(21) 한림중개의과학연구원',
-    '(22) 산학협력관',
-    '(23) 도헌글로벌스쿨',
-    '(24) 학생생활관 1관',
-    '(25) 학생생활관 2관',
-    '(26) 학생생활관 3관',
-    '(27) 학생생활관 4관',
-    '(28) 학생생활관 5관',
-    '(29) 학생생활관 6관',
-    '(30) 학생생활관 7관',
-    '(31) 학생생활관 8관',
-    '(32) 체육 기자재실',
-    '(33) H Stadium',
-    '(34) IL Song Stadium',
-    '(35) 씨름장',
-    '(36) 온실',
-    '(37) 한림대학교 춘천성심병원',
-  ];
   late String _selectedLocation;
 
   late final String _initialTitle;
@@ -109,12 +73,12 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
       _selectedCategory = kItemCategories.contains(editing.category)
           ? editing.category
           : kItemCategories.last;
-      _selectedLocation = _locations.contains(editing.location)
+      _selectedLocation = kLocations.contains(editing.location)
           ? editing.location
-          : _locations.first;
+          : kLocations.first;
       _existingImageUrls = List.of(editing.imageUrls);
     } else {
-      _selectedLocation = _locations.first;
+      _selectedLocation = kLocations.first;
     }
 
     _initialTitle = _titleController.text;
@@ -142,13 +106,27 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
       );
       return;
     }
-    final picked = await ImagePicker().pickMultiImage(
-      imageQuality: 80,
-      maxWidth: 1600,
-    );
-    if (picked.isEmpty) return;
+    final source = await showImageSourceSheet(context);
+    if (source == null) return;
+
+    List<XFile> picked;
+    if (source == ImageSource.camera) {
+      final photo = await ImagePicker().pickImage(
+        source: ImageSource.camera,
+        imageQuality: 80,
+        maxWidth: 1600,
+      );
+      picked = photo == null ? [] : [photo];
+    } else {
+      picked = await ImagePicker().pickMultiImage(
+        imageQuality: 80,
+        maxWidth: 1600,
+      );
+    }
+    if (picked.isEmpty || !mounted) return;
     final selected = picked.take(remaining).toList();
     final bytesList = await Future.wait(selected.map((f) => f.readAsBytes()));
+    if (!mounted) return;
     setState(() {
       _newImages.addAll(selected);
       _newImageBytes.addAll(bytesList);
@@ -176,12 +154,73 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
     });
   }
 
+  Future<void> _pickLocation() async {
+    final result = await showSearchablePickerSheet(
+      context: context,
+      title: '장소 선택',
+      options: kLocations,
+    );
+    if (result != null) {
+      setState(() => _selectedLocation = result);
+    }
+  }
+
   @override
   void dispose() {
     _titleController.dispose();
     _descriptionController.dispose();
     _locationDetailController.dispose();
     super.dispose();
+  }
+
+  /// 등록된 모든 사용자의 저장 키워드/구독 카테고리와 새 글을 비교해, 일치하는
+  /// 사용자(본인 제외)에게 알림을 보낸다. 서버 함수 없이 클라이언트에서 직접
+  /// 매칭하는 방식이라 사용자 수가 많아지면 이 한 번의 등록 작업이 읽는 문서
+  /// 수도 함께 늘어난다는 한계가 있다. 키워드와 카테고리가 둘 다 일치해도
+  /// 한 사람에게는 알림을 한 번만 보낸다(키워드를 우선한다).
+  Future<void> _notifyKeywordMatches({
+    required String itemId,
+    required String title,
+    required String description,
+    required String category,
+    required String posterUid,
+  }) async {
+    final haystack = '$title $description'.toLowerCase();
+    final snap = await FirebaseFirestore.instance
+        .collection('savedSearches')
+        .get();
+
+    final batch = FirebaseFirestore.instance.batch();
+    var hasMatches = false;
+    for (final doc in snap.docs) {
+      if (doc.id == posterUid) continue;
+      final data = doc.data();
+      final keywords = List<String>.from(data['keywords'] as List? ?? const []);
+      final matchedKeyword = keywords.firstWhere(
+        (k) => k.trim().isNotEmpty && haystack.contains(k.trim().toLowerCase()),
+        orElse: () => '',
+      );
+      final categories = List<String>.from(
+        data['categories'] as List? ?? const [],
+      );
+      final matchedCategory = categories.contains(category) ? category : '';
+
+      if (matchedKeyword.isEmpty && matchedCategory.isEmpty) continue;
+
+      hasMatches = true;
+      batch.set(FirebaseFirestore.instance.collection('notifications').doc(), {
+        'recipientUid': doc.id,
+        'senderUid': posterUid,
+        'type': 'keyword_match',
+        'matchType': matchedKeyword.isNotEmpty ? 'keyword' : 'category',
+        'keyword': matchedKeyword.isNotEmpty ? matchedKeyword : matchedCategory,
+        'itemId': itemId,
+        'itemTitle': title,
+        'read': false,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    }
+    if (hasMatches) await batch.commit();
   }
 
   Future<void> _submit() async {
@@ -236,7 +275,18 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
           authorNickname: user.displayName ?? '익명',
           imageUrls: imageUrls,
         );
-        await itemsCollection.add(newItem.toMap());
+        final ref = await itemsCollection.add(newItem.toMap());
+        // 키워드 알림 매칭 실패는 게시글 등록 자체를 막을 정도로 치명적이지
+        // 않으므로 조용히 무시한다.
+        try {
+          await _notifyKeywordMatches(
+            itemId: ref.id,
+            title: title,
+            description: description,
+            category: _selectedCategory,
+            posterUid: user.uid,
+          );
+        } catch (_) {}
       }
       if (mounted) Navigator.pop(context);
     } catch (e) {
@@ -497,32 +547,36 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
                 ),
               ),
               const SizedBox(height: 10),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppColors.line),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: _selectedLocation,
-                    isExpanded: true,
-                    icon: const Icon(Icons.keyboard_arrow_down_rounded),
-                    items: _locations
-                        .map(
-                          (loc) =>
-                              DropdownMenuItem(value: loc, child: Text(loc)),
-                        )
-                        .toList(),
-                    onChanged: (value) {
-                      if (value != null) {
-                        setState(() {
-                          _selectedLocation = value;
-                        });
-                      }
-                    },
+              InkWell(
+                borderRadius: BorderRadius.circular(12),
+                onTap: _pickLocation,
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 16,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppColors.line),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _selectedLocation,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            color: AppColors.ink,
+                          ),
+                        ),
+                      ),
+                      const Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        color: AppColors.inkMuted,
+                      ),
+                    ],
                   ),
                 ),
               ),
