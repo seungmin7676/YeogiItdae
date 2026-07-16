@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:firebase_auth/firebase_auth.dart';
@@ -6,6 +7,8 @@ import 'package:http/http.dart' as http;
 
 import '../services/backend_exception.dart';
 import '../theme/app_theme.dart';
+
+const int _kResendCooldownSeconds = 60;
 
 /// 화면: 이메일 인증 코드 입력
 class EmailVerificationScreen extends StatefulWidget {
@@ -22,6 +25,8 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
   bool _isVerifying = false;
   bool _isSending = false;
   String? _errorText;
+  Timer? _cooldownTimer;
+  int _cooldownSeconds = 0;
 
   @override
   void initState() {
@@ -32,7 +37,25 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
   @override
   void dispose() {
     _codeController.dispose();
+    _cooldownTimer?.cancel();
     super.dispose();
+  }
+
+  void _startCooldown() {
+    _cooldownTimer?.cancel();
+    setState(() => _cooldownSeconds = _kResendCooldownSeconds);
+    _cooldownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (_cooldownSeconds <= 1) {
+        timer.cancel();
+        setState(() => _cooldownSeconds = 0);
+      } else {
+        setState(() => _cooldownSeconds -= 1);
+      }
+    });
   }
 
   Future<Map<String, dynamic>> _callBackend(
@@ -87,12 +110,14 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
     setState(() => _isSending = true);
     try {
       await _callBackend('/api/send-code');
+      _startCooldown();
       if (mounted && !silent) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('인증 코드를 보냈습니다. 메일함을 확인해주세요.')),
         );
       }
     } on BackendException catch (e) {
+      if (e.code == 'cooldown') _startCooldown();
       if (mounted && !silent) {
         ScaffoldMessenger.of(
           context,
@@ -227,8 +252,16 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
                 ),
                 const SizedBox(height: 12),
                 TextButton(
-                  onPressed: _isSending ? null : () => _sendCode(),
-                  child: Text(_isSending ? '전송 중...' : '코드 재전송'),
+                  onPressed: (_isSending || _cooldownSeconds > 0)
+                      ? null
+                      : () => _sendCode(),
+                  child: Text(
+                    _isSending
+                        ? '전송 중...'
+                        : _cooldownSeconds > 0
+                        ? '$_cooldownSeconds초 후 재전송 가능'
+                        : '코드 재전송',
+                  ),
                 ),
                 TextButton(
                   onPressed: () => FirebaseAuth.instance.signOut(),

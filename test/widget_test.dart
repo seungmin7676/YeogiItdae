@@ -10,20 +10,27 @@ import 'package:latte/widgets/user_avatar.dart';
 
 void main() {
   group('UserAvatar', () {
-    testWidgets('닉네임의 첫 글자를 표시한다', (WidgetTester tester) async {
+    testWidgets('photoUrl이 없으면 기본 사람 아이콘을 표시한다', (WidgetTester tester) async {
       await tester.pumpWidget(
         const MaterialApp(home: Material(child: UserAvatar(nickname: '테스트봇'))),
       );
 
-      expect(find.text('테'), findsOneWidget);
+      expect(find.byIcon(Icons.person_rounded), findsOneWidget);
     });
 
-    testWidgets('닉네임이 비어있으면 물음표를 표시한다', (WidgetTester tester) async {
+    testWidgets('photoUrl이 있으면 이미지를 표시한다', (WidgetTester tester) async {
       await tester.pumpWidget(
-        const MaterialApp(home: Material(child: UserAvatar(nickname: '   '))),
+        const MaterialApp(
+          home: Material(
+            child: UserAvatar(
+              nickname: '테스트봇',
+              photoUrl: 'https://example.com/photo.png',
+            ),
+          ),
+        ),
       );
 
-      expect(find.text('?'), findsOneWidget);
+      expect(find.byType(Image), findsOneWidget);
     });
   });
 

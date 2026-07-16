@@ -83,14 +83,62 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }
 
-    // 공개 닉네임: 차단 목록/알림 등 다른 사용자 화면에서 실시간으로 최신
-    // 닉네임을 조회할 수 있도록 공개한다. 본인만 쓸 수 있다.
+    // 관심글(찜) 목록: 본인만 조회/수정 가능. { itemIds: [itemId, ...] } 형태.
+    match /bookmarks/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // 공개 닉네임/프로필 사진: 차단 목록·알림·채팅 등 다른 사용자 화면에서
+    // 실시간으로 최신 정보를 조회할 수 있도록 공개한다. 본인만 쓸 수 있다.
     match /userPublicProfiles/{uid} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null
+                  && request.auth.uid == uid
+                  && request.resource.data.keys().hasOnly(['nickname', 'photoUrl'])
+                  && (!('nickname' in request.resource.data)
+                      || request.resource.data.nickname is string)
+                  && (!('photoUrl' in request.resource.data)
+                      || request.resource.data.photoUrl is string);
+      allow delete: if request.auth != null && request.auth.uid == uid;
+    }
+
+    // 계정 단위 개인 설정(튜토리얼 확인 여부, 알림 종류별 켜고 끄기 등).
+    // 본인만 조회/수정 가능.
+    function isOptionalBool(data, key) {
+      return !(key in data) || data[key] is bool;
+    }
+    match /userSettings/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow write: if request.auth != null
+                  && request.auth.uid == uid
+                  && request.resource.data.keys().hasOnly([
+                       'onboardingSeen',
+                       'notifyChatStarted',
+                       'notifyKeywordMatch',
+                       'notifyReportResult',
+                       'notifyItemHidden'
+                     ])
+                  && isOptionalBool(request.resource.data, 'onboardingSeen')
+                  && isOptionalBool(request.resource.data, 'notifyChatStarted')
+                  && isOptionalBool(request.resource.data, 'notifyKeywordMatch')
+                  && isOptionalBool(request.resource.data, 'notifyReportResult')
+                  && isOptionalBool(request.resource.data, 'notifyItemHidden');
+    }
+
+    // 키워드/카테고리 구독 알림 저장 목록: 새 글이 등록될 때 글을 올리는
+    // 클라이언트가 직접 전체 목록을 훑어 일치하는 사용자에게 알림을 보내는
+    // 방식이라(백엔드 서버 함수 없이 처리하기 위함), 다른 사용자도 읽을 수
+    // 있어야 한다. 쓰기는 본인만 가능하다.
+    // { keywords: [string, ...], categories: [string, ...] } 형태.
+    match /savedSearches/{uid} {
       allow read: if request.auth != null;
       allow write: if request.auth != null
                   && request.auth.uid == uid
-                  && request.resource.data.keys().hasOnly(['nickname'])
-                  && request.resource.data.nickname is string;
+                  && request.resource.data.keys().hasOnly(['keywords', 'categories'])
+                  && (!('keywords' in request.resource.data)
+                      || request.resource.data.keywords is list)
+                  && (!('categories' in request.resource.data)
+                      || request.resource.data.categories is list);
     }
 
     // 채팅방: 참여자 2명만 읽기/쓰기 가능. 차단 관계여도 생성 자체는 막지 않는다
@@ -110,7 +158,7 @@ service cloud.firestore {
       allow update: if request.auth != null
                     && request.auth.uid in resource.data.participants
                     && request.resource.data.diff(resource.data).affectedKeys()
-                        .hasOnly(['lastMessage', 'lastMessageAt', 'clearedAt', 'lastReadAt', 'unreadCount', 'revealedRealNames', 'resolutionStatus', 'participantNicknames']);
+                        .hasOnly(['lastMessage', 'lastMessageAt', 'clearedAt', 'lastReadAt', 'unreadCount', 'revealedRealNames', 'resolutionStatus', 'participantNicknames', 'typing']);
       // 회원 탈퇴 시 본인이 속한 채팅방을 정리할 수 있도록 참여자 본인 삭제만 허용한다.
       allow delete: if request.auth != null && request.auth.uid in resource.data.participants;
 

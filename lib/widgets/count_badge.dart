@@ -10,27 +10,34 @@ class CountBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Container의 alignment(그리고 Center/Align)는 "부모가 bounded 제약을
-    // 주면 그 크기만큼 확장한 뒤 안에서 정렬"하는 동작이라, ListTile의
-    // trailing처럼 느슨하지만 유한한 폭 제약 안에서는 배지가 타일 전체
-    // 폭까지 늘어나 버린다("Trailing widget consumes the entire tile
-    // width" 에러의 원인). 정렬용 위젯을 아예 쓰지 않고 padding만으로
-    // 내용을 감싸야 내용 크기(+ minWidth) 그대로 유지된다.
+    // Container의 alignment(그리고 아무 factor 없는 Center/Align)는 "부모가
+    // bounded 제약을 주면 그 크기만큼 확장한 뒤 안에서 정렬"하는 동작이라,
+    // ListTile의 trailing처럼 느슨하지만 유한한 폭 제약 안에서는 배지가 타일
+    // 전체 폭까지 늘어나 버린다("Trailing widget consumes the entire tile
+    // width" 에러의 원인). 반면 widthFactor/heightFactor를 준 Center는 부모
+    // 제약이 유한하든 무한하든 항상 자식 크기(+ minWidth/height 제약)로만
+    // 축소되므로, 숫자를 안전하게 가운데 정렬할 수 있다.
     return Container(
       height: 16,
       constraints: const BoxConstraints(minWidth: 16),
-      padding: const EdgeInsets.symmetric(horizontal: 3),
       decoration: BoxDecoration(
         color: AppColors.danger,
         borderRadius: BorderRadius.circular(8),
       ),
-      child: Text(
-        count > 99 ? '99+' : '$count',
-        style: const TextStyle(
-          color: Colors.white,
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-          height: 1.0,
+      child: Center(
+        widthFactor: 1,
+        heightFactor: 1,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3),
+          child: Text(
+            count > 99 ? '99+' : '$count',
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              height: 1.0,
+            ),
+          ),
         ),
       ),
     );
@@ -60,6 +67,10 @@ class IconWithCountBadge extends StatelessWidget {
       clipBehavior: Clip.none,
       children: [
         icon,
+        // NavigationBar의 선택 표시(인디케이터) pill이 아이콘 주변을 살짝의
+        // 여유 공간만 두고 잘라내므로, 너무 많이 튀어나오게 하면(예: top: -4)
+        // 배지 윗부분이 그 안에서 잘려 찌그러져 보인다. 겹침을 최소화해
+        // 어떤 조상에서든 잘리지 않게 한다.
         if (count > 0)
           Positioned(right: -6, top: -4, child: CountBadge(count: count)),
       ],

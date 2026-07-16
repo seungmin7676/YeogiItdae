@@ -45,8 +45,13 @@ class OnboardingScreen extends StatefulWidget {
   /// (그래야 AuthGate의 로그인 상태 스트림과 연결이 끊기지 않아 이후
   /// 로그아웃 등 인증 상태 변화가 계속 정상적으로 반영된다).
   final VoidCallback onFinished;
+  final String uid;
 
-  const OnboardingScreen({super.key, required this.onFinished});
+  const OnboardingScreen({
+    super.key,
+    required this.uid,
+    required this.onFinished,
+  });
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -67,7 +72,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     // 체크하지 않으면 이번엔 그냥 넘어가되, 기록은 남기지 않아 다음
     // 로그인 때 튜토리얼이 다시 보이게 한다.
     if (_dontShowAgain) {
-      await markOnboardingSeen();
+      await markOnboardingSeen(widget.uid);
     }
     if (!mounted) return;
     widget.onFinished();
@@ -193,8 +198,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         value: _dontShowAgain,
                         activeColor: AppColors.primary,
                         visualDensity: VisualDensity.compact,
-                        materialTapTargetSize:
-                            MaterialTapTargetSize.shrinkWrap,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                         onChanged: (_) {},
                       ),
                     ),

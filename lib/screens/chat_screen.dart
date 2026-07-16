@@ -3,12 +3,15 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/cloudinary_service.dart';
+import '../services/image_save_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/feed_message.dart';
+import '../widgets/image_source_sheet.dart';
 import '../widgets/user_avatar.dart';
 
 /// 화면: 1:1 채팅
@@ -30,12 +33,14 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => _ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
   bool _isSendingImage = false;
   late final Future<Timestamp?> _myClearedAtFuture = _loadMyClearedAt();
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _messagesSub;
+  Timer? _typingTimer;
+  bool _isTypingFlagSet = false;
 
   CollectionReference<Map<String, dynamic>> get _messagesRef =>
       FirebaseFirestore.instance
@@ -46,6 +51,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _markAsRead();
     // 채팅방을 켜둔 채로 새 메시지가 도착해도 안읽음 처리되지 않도록,
     // 메시지가 갱신될 때마다 읽음 시각을 함께 갱신한다. 전체 기록을 다시
@@ -57,6 +63,17 @@ class _ChatScreenState extends State<ChatScreen> {
         .listen((_) {
           _markAsRead();
         });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 앱을 백그라운드로 보내면(홈으로 나가기, 다른 앱으로 전환 등) "입력
+    // 중..."이 상대방 화면에 계속 남아있지 않도록 정리한다. 앱이 완전히
+    // 강제 종료/크래시하는 경우까지는 클라이언트에서 막을 방법이 없다.
+    if (state != AppLifecycleState.resumed) {
+      final myUid = FirebaseAuth.instance.currentUser?.uid;
+      if (myUid != null) _clearTyping(myUid);
+    }
   }
 
   void _scrollToBottom() {
@@ -84,10 +101,55 @@ class _ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _messageController.dispose();
     _scrollController.dispose();
     _messagesSub?.cancel();
+    _typingTimer?.cancel();
+    final myUid = FirebaseAuth.instance.currentUser?.uid;
+    if (myUid != null && _isTypingFlagSet) {
+      FirebaseFirestore.instance
+          .collection('chats')
+          .doc(widget.chatId)
+          .update({'typing.$myUid': false})
+          .catchError((_) {});
+    }
     super.dispose();
+  }
+
+  /// 입력창에 글자가 있으면 상대방에게 "입력 중..."을 보여주고, 3초간 추가
+  /// 입력이 없으면 자동으로 꺼진다(메시지를 안 보내고 나가도 계속 켜져
+  /// 있지 않도록).
+  void _onMessageChanged(String text) {
+    final myUid = FirebaseAuth.instance.currentUser?.uid;
+    if (myUid == null) return;
+
+    if (text.isEmpty) {
+      _clearTyping(myUid);
+      return;
+    }
+
+    if (!_isTypingFlagSet) {
+      _isTypingFlagSet = true;
+      FirebaseFirestore.instance
+          .collection('chats')
+          .doc(widget.chatId)
+          .update({'typing.$myUid': true})
+          .catchError((_) {});
+    }
+    _typingTimer?.cancel();
+    _typingTimer = Timer(const Duration(seconds: 3), () => _clearTyping(myUid));
+  }
+
+  void _clearTyping(String myUid) {
+    _typingTimer?.cancel();
+    if (!_isTypingFlagSet) return;
+    _isTypingFlagSet = false;
+    FirebaseFirestore.instance
+        .collection('chats')
+        .doc(widget.chatId)
+        .update({'typing.$myUid': false})
+        .catchError((_) {});
   }
 
   Future<void> _markAsRead() async {
@@ -128,8 +190,11 @@ class _ChatScreenState extends State<ChatScreen> {
         'lastMessageAt': FieldValue.serverTimestamp(),
         'lastReadAt.${user.uid}': FieldValue.serverTimestamp(),
         'unreadCount.${widget.otherUid}': FieldValue.increment(1),
+        'typing.${user.uid}': false,
       });
       await batch.commit();
+      _typingTimer?.cancel();
+      _isTypingFlagSet = false;
       _messageController.clear();
     } catch (e) {
       if (mounted) {
@@ -141,33 +206,55 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _sendImage() async {
-    final picked = await ImagePicker().pickImage(
-      source: ImageSource.gallery,
-      imageQuality: 80,
-      maxWidth: 1600,
-    );
-    if (picked == null) return;
+    final source = await showImageSourceSheet(context);
+    if (source == null) return;
+
+    List<XFile> picked;
+    if (source == ImageSource.camera) {
+      final photo = await ImagePicker().pickImage(
+        source: ImageSource.camera,
+        imageQuality: 80,
+        maxWidth: 1600,
+      );
+      picked = photo == null ? [] : [photo];
+    } else {
+      picked = await ImagePicker().pickMultiImage(
+        imageQuality: 80,
+        maxWidth: 1600,
+      );
+    }
+    if (picked.isEmpty || !mounted) return;
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
     setState(() => _isSendingImage = true);
     try {
-      final url = await uploadImageToCloudinary(picked);
+      // Cloudinary 업로드는 배치 트랜잭션 대상이 아니라 순서대로 먼저
+      // 끝내둔 다음, 메시지 기록과 채팅방 메타데이터 갱신만 한 번에 묶는다.
+      final urls = <String>[];
+      for (final file in picked) {
+        urls.add(await uploadImageToCloudinary(file));
+      }
+
       final batch = FirebaseFirestore.instance.batch();
       final chatRef = FirebaseFirestore.instance
           .collection('chats')
           .doc(widget.chatId);
-      batch.set(_messagesRef.doc(), {
-        'senderUid': user.uid,
-        'type': 'image',
-        'imageUrl': url,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+      for (final url in urls) {
+        batch.set(_messagesRef.doc(), {
+          'senderUid': user.uid,
+          'type': 'image',
+          'imageUrl': url,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+      }
       batch.update(chatRef, {
-        'lastMessage': '사진을 보냈습니다',
+        'lastMessage': urls.length > 1
+            ? '사진 ${urls.length}장을 보냈습니다'
+            : '사진을 보냈습니다',
         'lastMessageAt': FieldValue.serverTimestamp(),
         'lastReadAt.${user.uid}': FieldValue.serverTimestamp(),
-        'unreadCount.${widget.otherUid}': FieldValue.increment(1),
+        'unreadCount.${widget.otherUid}': FieldValue.increment(urls.length),
       });
       await batch.commit();
     } catch (e) {
@@ -182,25 +269,45 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   /// 내가 보낸 메시지 버블 왼쪽에 카카오톡 스타일의 안읽음 표시('1')를 붙인다.
-  Widget _withUnreadMark({required bool show, required Widget bubble}) {
-    if (!show) return bubble;
+  /// 말풍선 옆에 (내 메시지면) 안읽음 '1'과 전송 시각을 함께 붙인다.
+  Widget _withMeta({
+    required bool isMine,
+    required bool showUnread,
+    required DateTime? createdAt,
+    required Widget bubble,
+  }) {
+    final meta = Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (showUnread)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 2),
+              child: Text(
+                '1',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: AppColors.primary,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          if (createdAt != null)
+            Text(
+              _formatMessageTime(createdAt),
+              style: const TextStyle(fontSize: 10, color: AppColors.inkMuted),
+            ),
+        ],
+      ),
+    );
     return Row(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.end,
-      children: [
-        const Padding(
-          padding: EdgeInsets.only(right: 4, bottom: 8),
-          child: Text(
-            '1',
-            style: TextStyle(
-              fontSize: 11,
-              color: AppColors.primary,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-        ),
-        bubble,
-      ],
+      children: isMine
+          ? [meta, const SizedBox(width: 4), bubble]
+          : [bubble, const SizedBox(width: 4), meta],
     );
   }
 
@@ -208,14 +315,48 @@ class _ChatScreenState extends State<ChatScreen> {
     showDialog<void>(
       context: context,
       barrierColor: Colors.black,
-      builder: (dialogContext) => GestureDetector(
-        onTap: () => Navigator.pop(dialogContext),
-        child: Scaffold(
-          backgroundColor: Colors.black,
-          body: Center(child: InteractiveViewer(child: Image.network(url))),
+      builder: (dialogContext) => Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            GestureDetector(
+              onTap: () => Navigator.pop(dialogContext),
+              child: Center(
+                child: InteractiveViewer(child: Image.network(url)),
+              ),
+            ),
+            SafeArea(
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    tooltip: '닫기',
+                    onPressed: () => Navigator.pop(dialogContext),
+                  ),
+                  IconButton(
+                    icon: const Icon(
+                      Icons.download_outlined,
+                      color: Colors.white,
+                    ),
+                    tooltip: '사진 저장',
+                    onPressed: () => saveImageToDevice(dialogContext, url),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
+  }
+
+  Future<void> _copyMessageText(String text) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('메시지를 복사했어요.')));
   }
 
   Future<void> _leaveChat() async {
@@ -479,7 +620,20 @@ class _ChatScreenState extends State<ChatScreen> {
         titleSpacing: 4,
         title: Row(
           children: [
-            UserAvatar(nickname: widget.otherNickname, size: 34),
+            StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+              stream: FirebaseFirestore.instance
+                  .collection('userPublicProfiles')
+                  .doc(widget.otherUid)
+                  .snapshots(),
+              builder: (context, profileSnapshot) {
+                return UserAvatar(
+                  nickname: widget.otherNickname,
+                  photoUrl:
+                      profileSnapshot.data?.data()?['photoUrl'] as String?,
+                  size: 34,
+                );
+              },
+            ),
             const SizedBox(width: 10),
             Expanded(
               child: Column(
@@ -494,13 +648,36 @@ class _ChatScreenState extends State<ChatScreen> {
                       color: AppColors.ink,
                     ),
                   ),
-                  Text(
-                    widget.itemTitle,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      color: AppColors.inkMuted,
-                    ),
-                    overflow: TextOverflow.ellipsis,
+                  StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                    stream: FirebaseFirestore.instance
+                        .collection('chats')
+                        .doc(widget.chatId)
+                        .snapshots(),
+                    builder: (context, chatSnapshot) {
+                      final typing = Map<String, dynamic>.from(
+                        chatSnapshot.data?.data()?['typing'] as Map? ?? {},
+                      );
+                      final isOtherTyping =
+                          typing[widget.otherUid] as bool? ?? false;
+                      if (isOtherTyping) {
+                        return const Text(
+                          '입력 중...',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.primary,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        );
+                      }
+                      return Text(
+                        widget.itemTitle,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: AppColors.inkMuted,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      );
+                    },
                   ),
                 ],
               ),
@@ -733,8 +910,10 @@ class _ChatScreenState extends State<ChatScreen> {
                                     alignment: isMine
                                         ? Alignment.centerRight
                                         : Alignment.centerLeft,
-                                    child: _withUnreadMark(
-                                      show: showUnread,
+                                    child: _withMeta(
+                                      isMine: isMine,
+                                      showUnread: showUnread,
+                                      createdAt: createdAt?.toDate(),
                                       bubble: GestureDetector(
                                         onTap: () => _openImageViewer(imageUrl),
                                         child: Container(
@@ -778,38 +957,54 @@ class _ChatScreenState extends State<ChatScreen> {
                                   );
                                 }
 
+                                final messageText =
+                                    data['text'] as String? ?? '';
                                 return Align(
                                   alignment: isMine
                                       ? Alignment.centerRight
                                       : Alignment.centerLeft,
-                                  child: _withUnreadMark(
-                                    show: showUnread,
-                                    bubble: Container(
-                                      margin: const EdgeInsets.only(bottom: 8),
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 14,
-                                        vertical: 10,
-                                      ),
-                                      constraints: BoxConstraints(
-                                        maxWidth:
-                                            MediaQuery.of(context).size.width *
-                                            0.7,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: isMine
-                                            ? AppColors.primary
-                                            : Colors.white,
-                                        borderRadius: BorderRadius.circular(16),
-                                        border: isMine
-                                            ? null
-                                            : Border.all(color: AppColors.line),
-                                      ),
-                                      child: Text(
-                                        data['text'] as String? ?? '',
-                                        style: TextStyle(
+                                  child: _withMeta(
+                                    isMine: isMine,
+                                    showUnread: showUnread,
+                                    createdAt: createdAt?.toDate(),
+                                    bubble: GestureDetector(
+                                      onLongPress: () =>
+                                          _copyMessageText(messageText),
+                                      child: Container(
+                                        margin: const EdgeInsets.only(
+                                          bottom: 8,
+                                        ),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 14,
+                                          vertical: 10,
+                                        ),
+                                        constraints: BoxConstraints(
+                                          maxWidth:
+                                              MediaQuery.of(
+                                                context,
+                                              ).size.width *
+                                              0.7,
+                                        ),
+                                        decoration: BoxDecoration(
                                           color: isMine
-                                              ? Colors.white
-                                              : AppColors.ink,
+                                              ? AppColors.primary
+                                              : Colors.white,
+                                          borderRadius: BorderRadius.circular(
+                                            16,
+                                          ),
+                                          border: isMine
+                                              ? null
+                                              : Border.all(
+                                                  color: AppColors.line,
+                                                ),
+                                        ),
+                                        child: Text(
+                                          messageText,
+                                          style: TextStyle(
+                                            color: isMine
+                                                ? Colors.white
+                                                : AppColors.ink,
+                                          ),
                                         ),
                                       ),
                                     ),
@@ -834,6 +1029,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 children: [
                   IconButton(
                     onPressed: _isSendingImage ? null : _sendImage,
+                    tooltip: '사진 보내기',
                     icon: _isSendingImage
                         ? const SizedBox(
                             width: 20,
@@ -846,6 +1042,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   Expanded(
                     child: TextField(
                       controller: _messageController,
+                      onChanged: _onMessageChanged,
                       decoration: InputDecoration(
                         hintText: '메시지 입력',
                         filled: true,
@@ -876,6 +1073,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   const SizedBox(width: 4),
                   IconButton(
                     onPressed: _send,
+                    tooltip: '전송',
                     icon: const Icon(Icons.send_rounded),
                     color: AppColors.primary,
                   ),
@@ -887,6 +1085,14 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
+}
+
+/// 메시지 전송 시각을 "오전/오후 h:mm" 형태로 표시한다.
+String _formatMessageTime(DateTime time) {
+  final isAm = time.hour < 12;
+  final hour12 = time.hour % 12 == 0 ? 12 : time.hour % 12;
+  final minute = time.minute.toString().padLeft(2, '0');
+  return '${isAm ? '오전' : '오후'} $hour12:$minute';
 }
 
 /// 채팅방 상단에 표시되는 안내 배너 (실명 공개, 거래완료 요청/확인 등).

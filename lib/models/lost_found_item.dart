@@ -39,6 +39,47 @@ const List<String> kItemCategories = [
   '기타',
 ];
 
+/// 캠퍼스 건물/장소 목록 (등록 폼의 장소 선택, 홈 피드의 장소 필터 공용).
+const List<String> kLocations = [
+  '(1) 공학관',
+  '(2) 대학본부-인문1관',
+  '(3) 의학관',
+  '(4) 인문2관',
+  '(5) 대학본부별관',
+  '(6) 실험동물센터',
+  '(7) 자연과학관',
+  '(8) 생명과학관',
+  '(9) Campus Life Center',
+  '(10) 사회경영1관',
+  '(11) 일송아트홀',
+  '(12) 창업보육센터',
+  '(13) 사회경영2관',
+  '(14) 국제관',
+  '(15) 국제회의관',
+  '(16) 기초교육관',
+  '(17) 일송창의비전관',
+  '(18) 한림레크리에이션센터',
+  '(19) 학군단',
+  '(20) 실내테니스장',
+  '(21) 한림중개의과학연구원',
+  '(22) 산학협력관',
+  '(23) 도헌글로벌스쿨',
+  '(24) 학생생활관 1관',
+  '(25) 학생생활관 2관',
+  '(26) 학생생활관 3관',
+  '(27) 학생생활관 4관',
+  '(28) 학생생활관 5관',
+  '(29) 학생생활관 6관',
+  '(30) 학생생활관 7관',
+  '(31) 학생생활관 8관',
+  '(32) 체육 기자재실',
+  '(33) H Stadium',
+  '(34) IL Song Stadium',
+  '(35) 씨름장',
+  '(36) 온실',
+  '(37) 한림대학교 춘천성심병원',
+];
+
 /// 신고가 이 횟수 이상 누적되면 일반 피드에서 자동으로 숨긴다.
 const int kReportThreshold = 3;
 
@@ -81,10 +122,8 @@ class LostFoundItem {
     this.viewCount = 0,
   });
 
-  factory LostFoundItem.fromDoc(
-    QueryDocumentSnapshot<Map<String, dynamic>> doc,
-  ) {
-    final data = doc.data();
+  factory LostFoundItem.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
+    final data = doc.data() ?? const {};
     final urlsField = data['imageUrls'] as List?;
     final legacyUrl = data['imageUrl'] as String?;
     final imageUrls = urlsField != null
