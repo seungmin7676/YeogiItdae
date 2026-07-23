@@ -503,8 +503,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       // 같은 글로 진행 중이던 다른 채팅이 있다면 그 쪽의 배너도 함께 정리한다
       // (현재 채팅방도 itemId가 같으므로 이 목록에 포함된다).
+      // 채팅 목록(list) 규칙은 "결과가 전부 본인이 참여한 채팅"임을 쿼리
+      // 조건만으로 증명해야 하므로 participants 필터가 반드시 필요하다.
+      // 이 함수는 게시글 작성자만 실행하고, 작성자는 이 글의 모든 채팅방
+      // 참여자라 결과는 동일하다.
+      final myUid = FirebaseAuth.instance.currentUser?.uid;
+      if (myUid == null) return;
       final relatedChats = await FirebaseFirestore.instance
           .collection('chats')
+          .where('participants', arrayContains: myUid)
           .where('itemId', isEqualTo: itemId)
           .get();
       final batch = FirebaseFirestore.instance.batch();

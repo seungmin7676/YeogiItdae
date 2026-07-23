@@ -734,8 +734,12 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
 
       // 이 글로 진행 중이던 모든 채팅의 거래완료 상태도 함께 맞춰서,
       // "상대방 확인 대기 중" 배너가 채팅방에 그대로 남아있지 않도록 한다.
+      // 채팅 목록(list) 규칙은 "결과가 전부 본인이 참여한 채팅"임을 쿼리
+      // 조건만으로 증명해야 하므로 participants 필터가 반드시 필요하다.
+      // 작성자는 이 글의 모든 채팅방 참여자라 결과는 동일하다.
       final relatedChats = await FirebaseFirestore.instance
           .collection('chats')
+          .where('participants', arrayContains: item.authorUid)
           .where('itemId', isEqualTo: item.id)
           .get();
       if (relatedChats.docs.isNotEmpty) {
@@ -788,8 +792,11 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
       // "게시글 삭제됨" 표시를 남긴다. 그렇지 않으면 채팅방에 남아있는
       // 거래완료 확인/처리 버튼이 이미 사라진 게시글 문서를 업데이트하려다
       // 실패해 사용자에게 원인을 알 수 없는 오류만 보여주게 된다.
+      // list 규칙 증명을 위해 participants 필터가 필요하다(_markResolved와
+      // 동일한 이유). 작성자는 이 글의 모든 채팅방 참여자라 결과는 동일하다.
       final relatedChats = await FirebaseFirestore.instance
           .collection('chats')
+          .where('participants', arrayContains: item.authorUid)
           .where('itemId', isEqualTo: item.id)
           .get();
       if (relatedChats.docs.isNotEmpty) {

@@ -14,7 +14,7 @@ const {
   assertSucceeds,
   assertFails,
 } = require('@firebase/rules-unit-testing');
-const { doc, getDoc, setDoc, updateDoc, deleteDoc, addDoc, collection } = require('firebase/firestore');
+const { doc, getDoc, setDoc, updateDoc, deleteDoc, addDoc, collection, getDocs, query, where } = require('firebase/firestore');
 
 const PROJECT_ID = 'demo-yeogi-itdae';
 const HALLYM_EMAIL = (id) => `${id}@hallym.ac.kr`;
@@ -311,6 +311,32 @@ test('chats: 참여자라도 participants 같은 고정 필드는 수정할 수 
   await assertFails(
     updateDoc(doc(db, 'chats', chatId), { participants: ['alice', 'carol'] }),
   );
+});
+
+test('chats: itemId만으로 거는 목록 쿼리는 참여자여도 거부된다(list 규칙 증명 불가)', async () => {
+  // 게시글 삭제/거래완료 시 관련 채팅방을 정리하는 클라이언트 쿼리의 회귀
+  // 테스트. participants 필터가 없으면 규칙이 "결과가 전부 본인 채팅"임을
+  // 증명할 수 없어 데이터와 무관하게 쿼리 전체가 거부된다.
+  await seedChat('alice', 'bob');
+  const db = hallymUser('bob').firestore();
+  await assertFails(
+    getDocs(query(collection(db, 'chats'), where('itemId', '==', 'item1'))),
+  );
+});
+
+test('chats: participants 필터를 함께 걸면 itemId 목록 쿼리가 허용된다', async () => {
+  await seedChat('alice', 'bob');
+  const db = hallymUser('bob').firestore();
+  const snap = await assertSucceeds(
+    getDocs(
+      query(
+        collection(db, 'chats'),
+        where('participants', 'array-contains', 'bob'),
+        where('itemId', '==', 'item1'),
+      ),
+    ),
+  );
+  assert.equal(snap.docs.length, 1);
 });
 
 test('chats: 참여자가 아니면 채팅방을 조회할 수 없다', async () => {
