@@ -2,7 +2,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../services/analytics_service.dart';
 import '../services/backend_exception.dart';
+import '../services/error_messages.dart';
 import '../theme/app_theme.dart';
 import '../widgets/department_field.dart';
 import '../widgets/hallym_logo.dart';
@@ -108,6 +110,7 @@ class _LoginScreenState extends State<LoginScreen> {
           email: email,
           password: password,
         );
+        logLogin();
       } else {
         final nickname = _nicknameController.text.trim();
         final credential = await FirebaseAuth.instance
@@ -115,6 +118,7 @@ class _LoginScreenState extends State<LoginScreen> {
         final user = credential.user!;
         await user.updateDisplayName(nickname);
         await user.reload();
+        logSignUp();
         await FirebaseFirestore.instance
             .collection('userPublicProfiles')
             .doc(user.uid)
@@ -150,9 +154,9 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('오류가 발생했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('오류가 발생했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
@@ -189,7 +193,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget build(BuildContext context) {
     final isLogin = _mode == _AuthMode.login;
     return Scaffold(
-      backgroundColor: AppColors.bg,
+      backgroundColor: AppColors.surface,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
@@ -200,38 +204,32 @@ class _LoginScreenState extends State<LoginScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Row(
+                  Column(
                     children: [
-                      const HallymLogo(size: 36),
-                      const SizedBox(width: 10),
-                      const Text(
-                        '여기있대!',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
+                      const HallymLogo(size: 56),
+                      const SizedBox(height: 12),
+                      Text(
+                        isLogin ? '다시 만나 반가워요!' : '캠퍼스에서\n잃어버린 걸 찾아보세요',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 22,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.4,
+                          height: 1.3,
+                          color: AppColors.ink,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        '$kAllowedEmailDomain 계정으로 시작하세요',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 13,
                           color: AppColors.inkMuted,
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
                     ],
-                  ),
-                  const SizedBox(height: 36),
-                  Text(
-                    isLogin ? '다시 만나서\n반가워요' : '캠퍼스에서\n잃어버린 걸 찾아보세요',
-                    style: const TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: -0.6,
-                      height: 1.25,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    '한림대학교 캠퍼스 분실물 찾기 · $kAllowedEmailDomain 계정으로 시작하세요',
-                    style: const TextStyle(
-                      fontSize: 13.5,
-                      height: 1.5,
-                      color: AppColors.inkMuted,
-                    ),
                   ),
                   const SizedBox(height: 32),
                   TextFormField(
@@ -280,6 +278,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     DepartmentField(
                       controller: _departmentController,
                       validator: _validateDepartment,
+                      fillColor: AppColors.surfaceAlt,
                     ),
                     const SizedBox(height: 14),
                     TextFormField(
@@ -293,14 +292,14 @@ class _LoginScreenState extends State<LoginScreen> {
                       onTap: () {
                         setState(() => _agreedToPrivacy = !_agreedToPrivacy);
                       },
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(kRadiusMd),
                       child: Container(
                         padding: const EdgeInsets.fromLTRB(12, 10, 14, 14),
                         decoration: BoxDecoration(
                           color: _agreedToPrivacy
-                              ? AppColors.primary.withValues(alpha: 0.06)
-                              : AppColors.surface,
-                          borderRadius: BorderRadius.circular(14),
+                              ? AppColors.primaryMuted
+                              : AppColors.surfaceAlt,
+                          borderRadius: BorderRadius.circular(kRadiusMd),
                           border: Border.all(
                             color: _agreedToPrivacy
                                 ? AppColors.primary.withValues(alpha: 0.4)
@@ -399,5 +398,10 @@ class _LoginScreenState extends State<LoginScreen> {
     String label, {
     required String hint,
     String? suffixText,
-  }) => appInputDecoration(label, hint: hint, suffixText: suffixText);
+  }) => appInputDecoration(
+    label,
+    hint: hint,
+    suffixText: suffixText,
+    fillColor: AppColors.surfaceAlt,
+  );
 }

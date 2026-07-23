@@ -3,6 +3,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import '../widgets/app_ui.dart';
+import '../widgets/app_user_data.dart';
 
 class _NotificationTypeOption {
   final String field;
@@ -55,55 +57,48 @@ class NotificationSettingsScreen extends StatelessWidget {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     return Scaffold(
       backgroundColor: AppColors.bg,
-      appBar: AppBar(
-        title: const Text('알림 설정'),
-        backgroundColor: AppColors.bg,
-        elevation: 0,
-      ),
-      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
-            .collection('userSettings')
-            .doc(uid ?? '_')
-            .snapshots(),
-        builder: (context, snapshot) {
-          final settings = snapshot.data?.data() ?? const {};
-          return ListView.separated(
-            padding: const EdgeInsets.all(20),
-            itemCount: _kNotificationTypes.length,
-            separatorBuilder: (context, index) => const SizedBox(height: 12),
-            itemBuilder: (context, index) {
-              final option = _kNotificationTypes[index];
-              final enabled = settings[option.field] as bool? ?? true;
-              return Container(
-                decoration: BoxDecoration(
-                  color: AppColors.surface,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: AppColors.line),
-                ),
-                child: SwitchListTile(
-                  activeThumbColor: AppColors.primary,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 4,
-                  ),
-                  title: Text(
-                    option.title,
-                    style: const TextStyle(fontWeight: FontWeight.w700),
-                  ),
-                  subtitle: Text(
-                    option.subtitle,
-                    style: const TextStyle(
-                      fontSize: 12.5,
-                      color: AppColors.inkMuted,
+      appBar: AppBar(title: const Text('알림 설정')),
+      body: Builder(
+        builder: (context) {
+          // 알림 설정은 AppUserData가 앱 전역에서 이미 한 번 구독해 내려주고
+          // 있으므로(main.dart 참고), 이 화면에서 또 구독하지 않고 그대로 쓴다.
+          // 스위치를 바꾸면 Firestore에 쓰는 즉시 AppUserData의 구독이 최신
+          // 값을 반영해 다시 내려준다.
+          final settings = AppUserData.of(context).settings;
+          return ListView(
+            padding: const EdgeInsets.all(kPagePadding),
+            children: [
+              GroupSurface(
+                children: [
+                  for (final option in _kNotificationTypes)
+                    SwitchListTile(
+                      activeThumbColor: AppColors.primary,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 4,
+                      ),
+                      title: Text(
+                        option.title,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 14.5,
+                        ),
+                      ),
+                      subtitle: Text(
+                        option.subtitle,
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          color: AppColors.inkMuted,
+                        ),
+                      ),
+                      value: settings[option.field] as bool? ?? true,
+                      onChanged: uid == null
+                          ? null
+                          : (value) => _setPreference(uid, option.field, value),
                     ),
-                  ),
-                  value: enabled,
-                  onChanged: uid == null
-                      ? null
-                      : (value) => _setPreference(uid, option.field, value),
-                ),
-              );
-            },
+                ],
+              ),
+            ],
           );
         },
       ),

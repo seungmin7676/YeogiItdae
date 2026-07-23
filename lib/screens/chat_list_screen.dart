@@ -3,11 +3,14 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
+import '../services/error_messages.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_ui.dart';
+import '../widgets/confirm_dialog.dart';
 import '../widgets/count_badge.dart';
 import '../widgets/feed_message.dart';
+import '../widgets/optimistic_hide_mixin.dart';
 import '../widgets/user_avatar.dart';
 import 'chat_screen.dart';
 
@@ -23,62 +26,51 @@ class ChatListScreen extends StatefulWidget {
   /// 메시지를 보내도 다시 나타나지 않도록 목록에서 완전히 제외한다.
   final Set<String> blockedUids;
 
+  /// 서버에 아직 불러오지 않은 채팅방이 더 있을 수 있는지 여부(페이지네이션).
+  final bool hasMore;
+  final bool isLoadingMore;
+  final VoidCallback? onLoadMore;
+
   const ChatListScreen({
     super.key,
     this.docs,
     this.hasError = false,
     this.blockedUids = const {},
+    this.hasMore = false,
+    this.isLoadingMore = false,
+    this.onLoadMore,
   });
 
   @override
   State<ChatListScreen> createState() => _ChatListScreenState();
 }
 
-class _ChatListScreenState extends State<ChatListScreen> {
+class _ChatListScreenState extends State<ChatListScreen>
+    with OptimisticHideMixin<ChatListScreen> {
   final _searchController = TextEditingController();
   String _searchQuery = '';
   Timer? _searchDebounce;
 
-  /// 나가기는 Firestore 서버 응답(스트림 갱신)을 받아야 목록에서 실제로
-  /// 빠지는데, Dismissible은 onDismissed가 끝난 다음 프레임에 위젯이
-  /// 트리에서 사라져 있기를 기대한다. 그 사이 시간차 때문에 "A dismissed
-  /// Dismissible widget is still part of the tree" 오류가 났었다. 서버
-  /// 응답을 기다리지 않고 로컬에서 즉시 감춰서 이 타이밍 문제를 없앤다.
-  ///
-  /// 서버가 clearedAt을 반영한 게 확인되면(didUpdateWidget) 바로 이 목록에서
-  /// 빼야 한다 — 계속 남겨두면 상대가 나중에 새 메시지를 보내도 정상적인
-  /// clearedAt vs lastMessageAt 재등장 로직을 이 임시 오버라이드가 계속
-  /// 가려버려서 채팅방이 다시 안 생기는 문제가 있었다.
-  final Set<String> _locallyLeftChatIds = {};
-
   @override
   void didUpdateWidget(covariant ChatListScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.docs == null || _locallyLeftChatIds.isEmpty) return;
+    if (widget.docs == null) return;
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
 
-    final presentIds = widget.docs!.map((doc) => doc.id).toSet();
-    final confirmed = <String>{
-      // 상대방 탈퇴 등으로 채팅방 문서 자체가 통째로 사라진 경우, clearedAt을
-      // 확인할 방법이 없으니(문서가 없음) 그냥 정리 대상으로 본다.
-      ..._locallyLeftChatIds.difference(presentIds),
-    };
-    for (final doc in widget.docs!) {
-      if (!_locallyLeftChatIds.contains(doc.id)) continue;
-      final clearedAt = Map<String, dynamic>.from(
-        doc.data()['clearedAt'] as Map? ?? {},
-      );
-      if (clearedAt[uid] != null) confirmed.add(doc.id);
-    }
-    if (confirmed.isNotEmpty) {
-      // build 도중 setState를 호출할 수 없으니 다음 프레임으로 미룬다.
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          setState(() => _locallyLeftChatIds.removeAll(confirmed));
-        }
-      });
-    }
+    // 나가기(clearedAt 반영)가 서버에서 실제로 확인된 채팅방만 로컬
+    // 오버라이드에서 정리한다. 문서 자체가 통째로 사라진 경우(상대방 탈퇴
+    // 등)는 clearedAt을 확인할 방법이 없으니 mixin이 알아서 정리 대상으로
+    // 본다.
+    reconcileLocallyHidden(
+      widget.docs!,
+      isConfirmedGone: (doc) {
+        final clearedAt = Map<String, dynamic>.from(
+          doc.data()['clearedAt'] as Map? ?? {},
+        );
+        return clearedAt[uid] != null;
+      },
+    );
   }
 
   @override
@@ -96,31 +88,14 @@ class _ChatListScreenState extends State<ChatListScreen> {
     });
   }
 
-  Future<bool> _confirmLeave(BuildContext context) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('채팅방 나가기'),
-        content: const Text(
-          '채팅방을 나가시겠습니까?\n나가면 이 채팅방은 목록에서 사라지고, 이전 메시지 기록도 더 이상 볼 수 없습니다.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('취소'),
-          ),
-          TextButton(
-            onPressed: () {
-              HapticFeedback.mediumImpact();
-              Navigator.pop(context, true);
-            },
-            child: const Text('나가기', style: TextStyle(color: AppColors.danger)),
-          ),
-        ],
-      ),
-    );
-    return confirmed == true;
-  }
+  Future<bool> _confirmLeave(BuildContext context) => showConfirmDialog(
+    context,
+    title: '채팅방 나가기',
+    content: '채팅방을 나가시겠습니까?\n나가면 이 채팅방은 목록에서 사라지고, 이전 메시지 기록도 더 이상 볼 수 없습니다.',
+    confirmLabel: '나가기',
+    danger: true,
+    haptic: true,
+  );
 
   Future<void> _leaveChat(
     BuildContext context,
@@ -135,11 +110,11 @@ class _ChatListScreenState extends State<ChatListScreen> {
     } catch (e) {
       // 실패하면 서버에는 반영되지 않았으니 로컬에서 감췄던 것도 되돌려
       // 목록에 다시 보이게 한다.
-      if (mounted) setState(() => _locallyLeftChatIds.remove(chatId));
+      unhideLocally(chatId);
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('나가기에 실패했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('나가기에 실패했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
     }
   }
@@ -149,31 +124,28 @@ class _ChatListScreenState extends State<ChatListScreen> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     return Scaffold(
       backgroundColor: AppColors.bg,
-      appBar: AppBar(
-        title: const Text('채팅'),
-        backgroundColor: AppColors.bg,
-        elevation: 0,
-      ),
+      appBar: AppBar(title: const Text('채팅')),
       body: Column(
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+            padding: const EdgeInsets.fromLTRB(
+              kPagePadding,
+              12,
+              kPagePadding,
+              10,
+            ),
             child: TextField(
               controller: _searchController,
               onChanged: _onSearchChanged,
-              decoration: InputDecoration(
-                hintText: '상대방 닉네임이나 글 제목으로 검색',
-                hintStyle: const TextStyle(color: Color(0xFFB4B7C4)),
-                prefixIcon: const Icon(
-                  Icons.search_rounded,
-                  color: AppColors.inkMuted,
-                ),
+              decoration: appSearchDecoration(
+                '상대방 닉네임이나 글 제목으로 검색',
                 suffixIcon: _searchController.text.isEmpty
                     ? null
                     : IconButton(
                         icon: const Icon(
                           Icons.close_rounded,
                           color: AppColors.inkMuted,
+                          size: 18,
                         ),
                         tooltip: '검색어 지우기',
                         onPressed: () {
@@ -182,27 +154,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
                           setState(() => _searchQuery = '');
                         },
                       ),
-                filled: true,
-                fillColor: AppColors.surface,
-                contentPadding: const EdgeInsets.symmetric(vertical: 0),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(30),
-                  borderSide: const BorderSide(color: AppColors.line),
-                ),
-                enabledBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(30),
-                  borderSide: const BorderSide(color: AppColors.line),
-                ),
-                focusedBorder: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(30),
-                  borderSide: const BorderSide(
-                    color: AppColors.primary,
-                    width: 1.5,
-                  ),
-                ),
               ),
             ),
           ),
+          const Divider(),
           Expanded(
             child: Builder(
               builder: (context) {
@@ -222,7 +177,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
                 final visibleDocs =
                     widget.docs!.where((doc) {
-                      if (_locallyLeftChatIds.contains(doc.id)) return false;
+                      if (isLocallyHidden(doc.id)) return false;
                       final data = doc.data();
                       // 차단한 상대와의 채팅은 상대가 이후에 메시지를 보내
                       // lastMessageAt이 갱신되더라도 다시 나타나지 않도록,
@@ -271,7 +226,10 @@ class _ChatListScreenState extends State<ChatListScreen> {
                     icon: query.isEmpty
                         ? Icons.chat_bubble_outline_rounded
                         : Icons.search_off_rounded,
-                    text: query.isEmpty ? '진행 중인 채팅이 없어요.' : '검색 결과가 없습니다.',
+                    title: query.isEmpty ? '진행 중인 채팅이 없어요' : '검색 결과가 없어요',
+                    text: query.isEmpty
+                        ? '게시글 상세에서 채팅하기를 누르면\n작성자와 대화를 시작할 수 있어요.'
+                        : '다른 검색어로 다시 찾아보세요.',
                   );
                 }
 
@@ -281,10 +239,18 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       .collection('chats')
                       .where('participants', arrayContains: uid)
                       .get(const GetOptions(source: Source.server)),
-                  child: ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
-                    itemCount: visibleDocs.length,
+                  child: ListView.separated(
+                    padding: const EdgeInsets.only(bottom: 20),
+                    itemCount: visibleDocs.length + (widget.hasMore ? 1 : 0),
+                    separatorBuilder: (context, index) =>
+                        const Divider(indent: 80),
                     itemBuilder: (context, index) {
+                      if (index == visibleDocs.length) {
+                        return LoadMoreButton(
+                          isLoading: widget.isLoadingMore,
+                          onPressed: widget.onLoadMore,
+                        );
+                      }
                       final data = visibleDocs[index].data();
                       final participants = List<String>.from(
                         data['participants'] as List? ?? [],
@@ -309,43 +275,35 @@ class _ChatListScreenState extends State<ChatListScreen> {
                       final isUnread = unreadCount > 0;
                       final chatId = visibleDocs[index].id;
 
+                      // v3 — 보더 카드 대신 풀블리드 행. 안읽음 상태는
+                      // 옅은 틴트 배경 + 굵은 텍스트 + 숫자 배지로 표현한다.
                       return Dismissible(
                         key: ValueKey(chatId),
                         direction: DismissDirection.endToStart,
                         confirmDismiss: (_) => _confirmLeave(context),
                         onDismissed: (_) {
-                          setState(() => _locallyLeftChatIds.add(chatId));
+                          hideLocally(chatId);
                           if (uid != null) _leaveChat(context, chatId, uid);
                         },
                         background: Container(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          padding: const EdgeInsets.symmetric(horizontal: 20),
-                          alignment: Alignment.centerRight,
-                          decoration: BoxDecoration(
-                            color: AppColors.danger,
-                            borderRadius: BorderRadius.circular(16),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: kPagePadding,
                           ),
+                          alignment: Alignment.centerRight,
+                          color: AppColors.danger,
                           child: const Icon(
                             Icons.logout_rounded,
                             color: Colors.white,
                           ),
                         ),
-                        child: Card(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          elevation: 0,
-                          color: AppColors.surface,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(16),
-                            side: BorderSide(
-                              color: isUnread
-                                  ? AppColors.primary
-                                  : AppColors.line,
-                            ),
-                          ),
+                        child: Material(
+                          color: isUnread
+                              ? AppColors.primaryMuted
+                              : Colors.transparent,
                           child: ListTile(
                             contentPadding: const EdgeInsets.symmetric(
-                              horizontal: 14,
-                              vertical: 8,
+                              horizontal: kPagePadding,
+                              vertical: 6,
                             ),
                             leading:
                                 StreamBuilder<
@@ -362,6 +320,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
                                           profileSnapshot.data
                                                   ?.data()?['photoUrl']
                                               as String?,
+                                      size: 48,
                                     );
                                   },
                                 ),
@@ -369,20 +328,28 @@ class _ChatListScreenState extends State<ChatListScreen> {
                               otherNickname,
                               style: const TextStyle(
                                 fontWeight: FontWeight.w700,
+                                fontSize: 15,
+                                letterSpacing: -0.2,
                                 color: AppColors.ink,
                               ),
                             ),
-                            subtitle: Text(
-                              lastMessage.isNotEmpty ? lastMessage : itemTitle,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontWeight: isUnread
-                                    ? FontWeight.w700
-                                    : FontWeight.normal,
-                                color: isUnread
-                                    ? AppColors.ink
-                                    : AppColors.inkMuted,
+                            subtitle: Padding(
+                              padding: const EdgeInsets.only(top: 2),
+                              child: Text(
+                                lastMessage.isNotEmpty
+                                    ? lastMessage
+                                    : itemTitle,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 13.5,
+                                  fontWeight: isUnread
+                                      ? FontWeight.w600
+                                      : FontWeight.normal,
+                                  color: isUnread
+                                      ? AppColors.ink
+                                      : AppColors.inkMuted,
+                                ),
                               ),
                             ),
                             trailing: isUnread

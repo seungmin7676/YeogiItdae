@@ -1,18 +1,36 @@
 import 'dart:async';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/lost_found_item.dart';
+import '../services/analytics_service.dart';
+import '../services/error_messages.dart';
 import '../services/image_save_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_user_data.dart';
+import '../widgets/confirm_dialog.dart';
 import '../widgets/item_card.dart';
 import 'author_posts_screen.dart';
 import 'chat_screen.dart';
 import 'register_item_screen.dart';
+
+/// 게시글 상세를 바텀시트로 연다. 홈 피드·내 글·작성자 글·찜한 글·알림
+/// 화면에서 완전히 동일한 방식으로 열길래 한 곳에 모았다.
+void showItemDetailSheet(BuildContext context, LostFoundItem item) {
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: AppColors.surface,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(kRadiusXl)),
+    ),
+    builder: (context) => ItemDetailSheet(item: item),
+  );
+}
 
 /// 상세보기 상단의 사진 갤러리 (여러 장이면 스와이프 + 페이지 표시).
 class _ImageGallery extends StatefulWidget {
@@ -37,9 +55,9 @@ class _ImageGalleryState extends State<_ImageGallery> {
   @override
   Widget build(BuildContext context) {
     return ClipRRect(
-      borderRadius: BorderRadius.circular(16),
+      borderRadius: BorderRadius.circular(kRadiusLg),
       child: SizedBox(
-        height: 210,
+        height: 240,
         child: Stack(
           children: [
             PageView.builder(
@@ -49,31 +67,28 @@ class _ImageGalleryState extends State<_ImageGallery> {
               itemBuilder: (context, index) => GestureDetector(
                 onTap: () =>
                     _openFullScreenGallery(context, widget.imageUrls, index),
-                child: Image.network(
-                  widget.imageUrls[index],
+                child: CachedNetworkImage(
+                  imageUrl: widget.imageUrls[index],
                   width: double.infinity,
-                  height: 210,
+                  height: 240,
                   fit: BoxFit.cover,
-                  loadingBuilder: (context, child, progress) {
-                    if (progress == null) return child;
-                    return Container(
-                      width: double.infinity,
-                      height: 210,
-                      color: AppColors.bg,
-                      alignment: Alignment.center,
-                      child: const CircularProgressIndicator(
-                        color: AppColors.primary,
-                        strokeWidth: 2.5,
-                      ),
-                    );
-                  },
-                  errorBuilder: (context, error, stackTrace) => Container(
+                  placeholder: (context, url) => Container(
                     width: double.infinity,
-                    height: 210,
-                    color: AppColors.bg,
+                    height: 240,
+                    color: AppColors.surfaceAlt,
+                    alignment: Alignment.center,
+                    child: const CircularProgressIndicator(
+                      color: AppColors.primary,
+                      strokeWidth: 2.5,
+                    ),
+                  ),
+                  errorWidget: (context, url, error) => Container(
+                    width: double.infinity,
+                    height: 240,
+                    color: AppColors.surfaceAlt,
                     child: const Icon(
                       Icons.broken_image_outlined,
-                      color: Color(0xFFC7CAD6),
+                      color: AppColors.inkFaint,
                       size: 40,
                     ),
                   ),
@@ -91,7 +106,7 @@ class _ImageGalleryState extends State<_ImageGallery> {
                   ),
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.55),
-                    borderRadius: BorderRadius.circular(20),
+                    borderRadius: BorderRadius.circular(kRadiusSm),
                   ),
                   child: Text(
                     '${_page + 1}/${widget.imageUrls.length}',
@@ -160,16 +175,14 @@ class _FullScreenGalleryState extends State<_FullScreenGallery> {
             itemCount: widget.imageUrls.length,
             itemBuilder: (context, index) => InteractiveViewer(
               child: Center(
-                child: Image.network(
-                  widget.imageUrls[index],
-                  loadingBuilder: (context, child, progress) {
-                    if (progress == null) return child;
-                    return const CircularProgressIndicator(
-                      color: Colors.white,
-                      strokeWidth: 2.5,
-                    );
-                  },
-                  errorBuilder: (context, error, stackTrace) => const Icon(
+                child: CachedNetworkImage(
+                  imageUrl: widget.imageUrls[index],
+                  placeholder: (context, url) =>
+                      const CircularProgressIndicator(
+                        color: Colors.white,
+                        strokeWidth: 2.5,
+                      ),
+                  errorWidget: (context, url, error) => const Icon(
                     Icons.broken_image_outlined,
                     color: Colors.white54,
                     size: 48,
@@ -212,7 +225,7 @@ class _FullScreenGalleryState extends State<_FullScreenGallery> {
                     ),
                     decoration: BoxDecoration(
                       color: Colors.white.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(20),
+                      borderRadius: BorderRadius.circular(kRadiusSm),
                     ),
                     child: Text(
                       '${_page + 1}/${widget.imageUrls.length}',
@@ -269,193 +282,198 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final metaParts = [
+      if (item.createdAt != null) relativeTime(item.createdAt),
+      '조회 ${item.viewCount}',
+    ];
     return Padding(
       padding: EdgeInsets.only(
         bottom: MediaQuery.of(context).viewInsets.bottom,
       ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+      // 내용이 길어도 넘치지 않도록 본문은 스크롤 영역에, 핵심 행동(채팅하기/
+      // 수정·삭제)은 하단 고정 영역에 둔다.
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.88,
+        ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Stack(
-              alignment: Alignment.center,
-              children: [
-                Container(
-                  width: 44,
-                  height: 5,
-                  decoration: BoxDecoration(
-                    color: AppColors.line,
-                    borderRadius: BorderRadius.circular(3),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(kPagePadding, 10, 8, 0),
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: AppColors.lineStrong,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
-                ),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      IconButton(
-                        icon: const Icon(
-                          Icons.share_outlined,
-                          size: 20,
-                          color: AppColors.inkMuted,
-                        ),
-                        tooltip: '공유하기',
-                        visualDensity: VisualDensity.compact,
-                        onPressed: () => _shareItem(context),
-                      ),
-                      if (FirebaseAuth.instance.currentUser?.uid != null &&
-                          FirebaseAuth.instance.currentUser!.uid !=
-                              item.authorUid) ...[
-                        if (item.id != null) _BookmarkButton(item: item),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
                         IconButton(
                           icon: const Icon(
-                            Icons.flag_outlined,
+                            Icons.share_outlined,
                             size: 20,
                             color: AppColors.inkMuted,
                           ),
-                          tooltip: '신고하기',
+                          tooltip: '공유하기',
                           visualDensity: VisualDensity.compact,
-                          onPressed: () => _reportItem(context),
+                          onPressed: () => _shareItem(context),
                         ),
+                        if (FirebaseAuth.instance.currentUser?.uid != null &&
+                            FirebaseAuth.instance.currentUser!.uid !=
+                                item.authorUid) ...[
+                          if (item.id != null) _BookmarkButton(item: item),
+                          IconButton(
+                            icon: const Icon(
+                              Icons.flag_outlined,
+                              size: 20,
+                              color: AppColors.inkMuted,
+                            ),
+                            tooltip: '신고하기',
+                            visualDensity: VisualDensity.compact,
+                            onPressed: () => _reportItem(context),
+                          ),
+                        ],
                       ],
-                    ],
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            if (item.imageUrls.isNotEmpty) ...[
-              _ImageGallery(imageUrls: item.imageUrls),
-              const SizedBox(height: 18),
-            ],
-            Row(
-              children: [
-                StatusBadge(type: item.type),
-                if (item.resolved) ...[
-                  const SizedBox(width: 6),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 9,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFEDEEF3),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: const Text(
-                      '거래완료',
-                      style: TextStyle(
-                        color: AppColors.inkMuted,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                      ),
                     ),
                   ),
                 ],
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(
-              item.title,
-              style: const TextStyle(
-                fontSize: 22,
-                fontWeight: FontWeight.w800,
-                color: AppColors.ink,
-                letterSpacing: -0.3,
               ),
             ),
-            const SizedBox(height: 16),
-            if (item.description.isNotEmpty) ...[
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.bg,
-                  borderRadius: BorderRadius.circular(14),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(
+                  kPagePadding,
+                  10,
+                  kPagePadding,
+                  16,
                 ),
-                child: Text(
-                  item.description,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    height: 1.55,
-                    color: AppColors.ink,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (item.imageUrls.isNotEmpty) ...[
+                      _ImageGallery(imageUrls: item.imageUrls),
+                      const SizedBox(height: 18),
+                    ],
+                    Row(
+                      children: [
+                        StatusBadge(type: item.type),
+                        const SizedBox(width: 8),
+                        Text(
+                          item.category,
+                          style: const TextStyle(
+                            fontSize: 12.5,
+                            color: AppColors.inkMuted,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (item.resolved) ...[
+                          const SizedBox(width: 8),
+                          const SoftBadge(
+                            label: '거래완료',
+                            color: AppColors.inkMuted,
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      item.title,
+                      style: const TextStyle(
+                        fontSize: 23,
+                        fontWeight: FontWeight.w800,
+                        color: AppColors.ink,
+                        letterSpacing: -0.6,
+                        height: 1.28,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      metaParts.join(' · '),
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        color: AppColors.inkFaint,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    if (item.description.isNotEmpty) ...[
+                      const SizedBox(height: 16),
+                      Text(
+                        item.description,
+                        style: const TextStyle(
+                          fontSize: 15,
+                          height: 1.65,
+                          color: AppColors.ink,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 20),
+                    const Divider(),
+                    const SizedBox(height: 16),
+                    _DetailRow(
+                      icon: Icons.place_outlined,
+                      label: item.type == ItemType.found ? '발견 장소' : '분실 장소',
+                      value: item.locationDetail.isEmpty
+                          ? item.location
+                          : '${item.location} (${item.locationDetail})',
+                    ),
+                    const SizedBox(height: 12),
+                    _DetailRow(
+                      icon: Icons.category_outlined,
+                      label: '카테고리',
+                      value: item.category,
+                    ),
+                    const SizedBox(height: 12),
+                    _DetailRow(
+                      icon: Icons.person_outline,
+                      label: '작성자',
+                      value: item.authorNickname,
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => AuthorPostsScreen(
+                            authorUid: item.authorUid,
+                            authorNickname: item.authorNickname,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 20),
-            ],
-            _DetailRow(
-              icon: Icons.place_outlined,
-              label: item.type == ItemType.found ? '발견 장소' : '분실 장소',
-              value: item.locationDetail.isEmpty
-                  ? item.location
-                  : '${item.location} (${item.locationDetail})',
             ),
-            const SizedBox(height: 12),
-            _DetailRow(
-              icon: Icons.label_outline,
-              label: '글 종류',
-              value: item.type == ItemType.found
-                  ? '습득물 (주웠어요)'
-                  : '분실물 (잃어버렸어요)',
-            ),
-            const SizedBox(height: 12),
-            _DetailRow(
-              icon: Icons.category_outlined,
-              label: '카테고리',
-              value: item.category,
-            ),
-            const SizedBox(height: 12),
-            _DetailRow(
-              icon: Icons.person_outline,
-              label: '작성자',
-              value: item.authorNickname,
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => AuthorPostsScreen(
-                    authorUid: item.authorUid,
-                    authorNickname: item.authorNickname,
-                  ),
-                ),
+            Container(
+              width: double.infinity,
+              decoration: const BoxDecoration(
+                border: Border(top: BorderSide(color: AppColors.line)),
               ),
-            ),
-            if (item.createdAt != null) ...[
-              const SizedBox(height: 12),
-              _DetailRow(
-                icon: Icons.schedule_outlined,
-                label: '등록일',
-                value: relativeTime(item.createdAt),
+              padding: const EdgeInsets.fromLTRB(
+                kPagePadding,
+                12,
+                kPagePadding,
+                12,
               ),
-            ],
-            const SizedBox(height: 12),
-            _DetailRow(
-              icon: Icons.visibility_outlined,
-              label: '조회수',
-              value: '${item.viewCount}회',
-            ),
-            const SizedBox(height: 32),
-            Builder(
-              builder: (context) {
-                final currentUid = FirebaseAuth.instance.currentUser?.uid;
-                final isOwner =
-                    currentUid == item.authorUid && item.authorUid.isNotEmpty;
+              child: SafeArea(
+                top: false,
+                child: Builder(
+                  builder: (context) {
+                    final currentUid = FirebaseAuth.instance.currentUser?.uid;
+                    final isOwner =
+                        currentUid == item.authorUid &&
+                        item.authorUid.isNotEmpty;
 
-                if (!isOwner) {
-                  return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                    stream: FirebaseFirestore.instance
-                        .collection('blocks')
-                        .doc(currentUid ?? '_')
-                        .snapshots(),
-                    builder: (context, snapshot) {
-                      final blockedUsers = Map<String, dynamic>.from(
-                        snapshot.data?.data()?['blockedUsers'] as Map? ?? {},
-                      );
-                      final hasBlocked = blockedUsers.containsKey(
-                        item.authorUid,
-                      );
+                    if (!isOwner) {
+                      final hasBlocked = AppUserData.of(
+                        context,
+                      ).blockedUids.contains(item.authorUid);
 
                       if (hasBlocked) {
                         return Container(
@@ -463,7 +481,7 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
                           padding: const EdgeInsets.symmetric(vertical: 14),
                           decoration: BoxDecoration(
                             color: AppColors.line,
-                            borderRadius: BorderRadius.circular(14),
+                            borderRadius: BorderRadius.circular(kRadiusMd),
                           ),
                           alignment: Alignment.center,
                           child: const Text(
@@ -492,74 +510,81 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
                           label: const Text('채팅하기'),
                         ),
                       );
-                    },
-                  );
-                }
+                    }
 
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    if (!item.resolved)
-                      OutlinedButton.icon(
-                        onPressed: _isProcessing
-                            ? null
-                            : () => _markResolved(context),
-                        icon: _isProcessing
-                            ? const SizedBox(
-                                width: 16,
-                                height: 16,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: AppColors.primary,
-                                ),
-                              )
-                            : const Icon(Icons.check_circle_outline),
-                        label: const Text('거래완료로 표시'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: AppColors.primary,
-                          side: const BorderSide(color: AppColors.primary),
-                        ),
-                      ),
-                    const SizedBox(height: 12),
-                    Row(
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _isProcessing
-                                ? null
-                                : () => _editItem(context),
-                            icon: const Icon(Icons.edit_outlined),
-                            label: const Text('수정'),
+                        if (item.isHidden && item.id != null)
+                          _ReportAppealSection(
+                            itemId: item.id!,
+                            itemTitle: item.title,
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: OutlinedButton.icon(
+                        if (!item.resolved)
+                          OutlinedButton.icon(
                             onPressed: _isProcessing
                                 ? null
-                                : () => _confirmDelete(context),
+                                : () => _markResolved(context),
                             icon: _isProcessing
                                 ? const SizedBox(
                                     width: 16,
                                     height: 16,
                                     child: CircularProgressIndicator(
                                       strokeWidth: 2,
-                                      color: AppColors.danger,
+                                      color: AppColors.primary,
                                     ),
                                   )
-                                : const Icon(Icons.delete_outline),
-                            label: const Text('삭제'),
+                                : const Icon(Icons.check_circle_outline),
+                            label: const Text('거래완료로 표시'),
                             style: OutlinedButton.styleFrom(
-                              foregroundColor: AppColors.danger,
-                              side: const BorderSide(color: AppColors.danger),
+                              foregroundColor: AppColors.primary,
+                              side: const BorderSide(color: AppColors.primary),
                             ),
                           ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: _isProcessing
+                                    ? null
+                                    : () => _editItem(context),
+                                icon: const Icon(Icons.edit_outlined),
+                                label: const Text('수정'),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: _isProcessing
+                                    ? null
+                                    : () => _confirmDelete(context),
+                                icon: _isProcessing
+                                    ? const SizedBox(
+                                        width: 16,
+                                        height: 16,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: AppColors.danger,
+                                        ),
+                                      )
+                                    : const Icon(Icons.delete_outline),
+                                label: const Text('삭제'),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: AppColors.danger,
+                                  side: const BorderSide(
+                                    color: AppColors.danger,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
-                    ),
-                  ],
-                );
-              },
+                    );
+                  },
+                ),
+              ),
             ),
           ],
         ),
@@ -727,9 +752,9 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
     } catch (e) {
       if (mounted) setState(() => _isProcessing = false);
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('처리하지 못했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('처리하지 못했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
     }
   }
@@ -745,40 +770,46 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
   }
 
   Future<void> _confirmDelete(BuildContext context) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('게시글 삭제'),
-        content: const Text('이 게시글을 삭제하시겠습니까? 삭제 후에는 되돌릴 수 없습니다.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('취소'),
-          ),
-          TextButton(
-            onPressed: () {
-              HapticFeedback.mediumImpact();
-              Navigator.pop(context, true);
-            },
-            child: const Text('삭제', style: TextStyle(color: AppColors.danger)),
-          ),
-        ],
-      ),
+    final confirmed = await showConfirmDialog(
+      context,
+      title: '게시글 삭제',
+      content: '이 게시글을 삭제하시겠습니까? 삭제 후에는 되돌릴 수 없습니다.',
+      confirmLabel: '삭제',
+      danger: true,
+      haptic: true,
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
     if (!context.mounted || _isProcessing) return;
 
     setState(() => _isProcessing = true);
     final navigator = Navigator.of(context);
     try {
+      // 게시글을 지우기 전에, 이 글로 진행 중이던 채팅방들에 먼저
+      // "게시글 삭제됨" 표시를 남긴다. 그렇지 않으면 채팅방에 남아있는
+      // 거래완료 확인/처리 버튼이 이미 사라진 게시글 문서를 업데이트하려다
+      // 실패해 사용자에게 원인을 알 수 없는 오류만 보여주게 된다.
+      final relatedChats = await FirebaseFirestore.instance
+          .collection('chats')
+          .where('itemId', isEqualTo: item.id)
+          .get();
+      if (relatedChats.docs.isNotEmpty) {
+        final batch = FirebaseFirestore.instance.batch();
+        for (final chatDoc in relatedChats.docs) {
+          batch.set(chatDoc.reference, {
+            'itemDeleted': true,
+          }, SetOptions(merge: true));
+        }
+        await batch.commit();
+      }
+
       await itemsCollection.doc(item.id).delete();
       navigator.pop();
     } catch (e) {
       if (mounted) setState(() => _isProcessing = false);
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('삭제하지 못했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('삭제하지 못했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
     }
   }
@@ -833,13 +864,14 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
           'read': false,
           'createdAt': FieldValue.serverTimestamp(),
         });
+        logChatStarted();
       }
     } catch (e) {
       if (mounted) setState(() => _isProcessing = false);
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('채팅을 시작하지 못했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('채팅을 시작하지 못했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
       return;
     }
@@ -880,9 +912,9 @@ class _BookmarkButton extends StatelessWidget {
       }
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('찜 처리에 실패했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('찜 처리에 실패했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
     }
   }
@@ -933,13 +965,17 @@ class _DetailRow extends StatelessWidget {
     final row = Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(icon, size: 18, color: AppColors.inkMuted),
-        const SizedBox(width: 8),
+        Icon(icon, size: 17, color: AppColors.inkFaint),
+        const SizedBox(width: 10),
         SizedBox(
           width: 68,
           child: Text(
             label,
-            style: const TextStyle(fontSize: 13.5, color: AppColors.inkMuted),
+            style: const TextStyle(
+              fontSize: 13.5,
+              color: AppColors.inkMuted,
+              fontWeight: FontWeight.w500,
+            ),
           ),
         ),
         const SizedBox(width: 8),
@@ -950,14 +986,191 @@ class _DetailRow extends StatelessWidget {
               fontSize: 14,
               fontWeight: FontWeight.w600,
               color: onTap != null ? AppColors.primary : AppColors.ink,
-              decoration: onTap != null ? TextDecoration.underline : null,
-              decorationColor: AppColors.primary,
             ),
           ),
         ),
+        if (onTap != null)
+          const Icon(
+            Icons.chevron_right_rounded,
+            size: 18,
+            color: AppColors.inkFaint,
+          ),
       ],
     );
     if (onTap == null) return row;
-    return InkWell(onTap: onTap, child: row);
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(kRadiusSm),
+      child: row,
+    );
+  }
+}
+
+/// 신고 누적으로 숨김 처리된 게시글에서 작성자에게 보여주는 이의제기 영역.
+/// 검토·해제는 클라이언트/자동화 없이 관리자가 Firebase 콘솔에서 직접
+/// reportAppeals 문서를 보고 판단하는 최소 기능이다.
+class _ReportAppealSection extends StatefulWidget {
+  final String itemId;
+  final String itemTitle;
+
+  const _ReportAppealSection({required this.itemId, required this.itemTitle});
+
+  @override
+  State<_ReportAppealSection> createState() => _ReportAppealSectionState();
+}
+
+class _ReportAppealSectionState extends State<_ReportAppealSection> {
+  bool _isSubmitting = false;
+
+  Future<void> _submitAppeal(BuildContext context) async {
+    final reasonController = TextEditingController();
+    final reason = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(kRadiusMd),
+        ),
+        title: const Text('이의제기'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '신고가 누적되어 이 게시글이 자동으로 숨겨졌어요.\n부당하다고 생각되면 사유를 남겨주세요.',
+              style: TextStyle(
+                color: AppColors.inkMuted,
+                fontSize: 12.5,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: reasonController,
+              autofocus: true,
+              maxLines: 3,
+              decoration: const InputDecoration(hintText: '이의제기 사유를 입력해주세요'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('취소'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(dialogContext, reasonController.text.trim()),
+            child: const Text('제출'),
+          ),
+        ],
+      ),
+    );
+    if (reason == null || reason.isEmpty || !context.mounted) return;
+
+    final myUid = FirebaseAuth.instance.currentUser?.uid;
+    if (myUid == null) return;
+
+    setState(() => _isSubmitting = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await FirebaseFirestore.instance
+          .collection('reportAppeals')
+          .doc(widget.itemId)
+          .set({
+            'itemId': widget.itemId,
+            'itemTitle': widget.itemTitle,
+            'authorUid': myUid,
+            'reason': reason,
+            'status': 'pending',
+            'createdAt': FieldValue.serverTimestamp(),
+          });
+      messenger.showSnackBar(
+        const SnackBar(content: Text('이의제기를 접수했어요. 검토 후 처리해드릴게요.')),
+      );
+    } on FirebaseException catch (e) {
+      final message = e.code == 'permission-denied'
+          ? '이미 이의제기를 접수한 게시글입니다.'
+          : '이의제기 접수에 실패했습니다: ${e.message}';
+      messenger.showSnackBar(SnackBar(content: Text(message)));
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('이의제기 접수에 실패했습니다: ${friendlyErrorMessage(e)}')),
+      );
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('reportAppeals')
+          .doc(widget.itemId)
+          .snapshots(),
+      builder: (context, snapshot) {
+        final alreadySubmitted = snapshot.data?.exists ?? false;
+        return Container(
+          width: double.infinity,
+          margin: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: AppColors.danger.withValues(alpha: 0.06),
+            borderRadius: BorderRadius.circular(kRadiusMd),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(
+                    Icons.visibility_off_outlined,
+                    size: 18,
+                    color: AppColors.danger,
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      '신고 누적으로 숨김 처리된 게시글이에요',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.danger,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              if (alreadySubmitted)
+                const Text(
+                  '이의제기가 접수되어 검토 중이에요.',
+                  style: TextStyle(fontSize: 12.5, color: AppColors.inkMuted),
+                )
+              else
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: _isSubmitting
+                        ? null
+                        : () => _submitAppeal(context),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.danger,
+                      side: const BorderSide(color: AppColors.danger),
+                    ),
+                    child: _isSubmitting
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Text('부당한 신고라면 이의제기하기'),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
   }
 }

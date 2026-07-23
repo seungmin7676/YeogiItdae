@@ -8,7 +8,10 @@ import 'package:image_picker/image_picker.dart';
 import '../models/lost_found_item.dart';
 import '../services/backend_exception.dart';
 import '../services/cloudinary_service.dart';
+import '../services/error_messages.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_ui.dart';
+import '../widgets/confirm_dialog.dart';
 import '../widgets/user_avatar.dart';
 import 'blocked_users_screen.dart';
 import 'notification_settings_screen.dart';
@@ -68,9 +71,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     final action = await showModalBottomSheet<String>(
       context: context,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.surface,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(kRadiusXl)),
       ),
       builder: (context) => SafeArea(
         child: Column(
@@ -115,9 +118,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
           await ref.set({'photoUrl': ''}, SetOptions(merge: true));
         } catch (e) {
           if (mounted) {
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('사진 삭제에 실패했습니다: $e')));
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('사진 삭제에 실패했습니다: ${friendlyErrorMessage(e)}'),
+              ),
+            );
           }
         }
         return;
@@ -135,9 +140,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
         await ref.set({'photoUrl': url}, SetOptions(merge: true));
       } catch (e) {
         if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('사진 업로드에 실패했습니다: $e')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('사진 업로드에 실패했습니다: ${friendlyErrorMessage(e)}'),
+            ),
+          );
         }
       }
     } finally {
@@ -162,7 +169,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
           builder: (dialogContext, setDialogState) {
             return AlertDialog(
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(kRadiusMd),
               ),
               title: const Text('닉네임 변경'),
               content: Form(
@@ -218,7 +225,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             setDialogState(() => isSaving = false);
                             if (dialogContext.mounted) {
                               ScaffoldMessenger.of(dialogContext).showSnackBar(
-                                SnackBar(content: Text('변경에 실패했습니다: $e')),
+                                SnackBar(
+                                  content: Text(
+                                    '변경에 실패했습니다: ${friendlyErrorMessage(e)}',
+                                  ),
+                                ),
                               );
                             }
                           }
@@ -240,27 +251,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _confirmLogout() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('로그아웃'),
-        content: const Text('정말 로그아웃하시겠습니까?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('취소'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text(
-              '로그아웃',
-              style: TextStyle(color: AppColors.danger),
-            ),
-          ),
-        ],
-      ),
+    final confirmed = await showConfirmDialog(
+      context,
+      title: '로그아웃',
+      content: '정말 로그아웃하시겠습니까?',
+      confirmLabel: '로그아웃',
+      danger: true,
     );
-    if (confirmed == true) {
+    if (confirmed) {
       await FirebaseAuth.instance.signOut();
     }
   }
@@ -274,7 +272,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       builder: (dialogContext) {
         return AlertDialog(
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(kRadiusMd),
           ),
           title: const Text('회원 탈퇴'),
           content: Form(
@@ -413,9 +411,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
     } catch (e) {
       if (mounted) {
         setState(() => _isDeleting = false);
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('탈퇴 처리 중 오류가 발생했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('탈퇴 처리 중 오류가 발생했습니다: ${friendlyErrorMessage(e)}'),
+          ),
+        );
       }
     }
   }
@@ -425,25 +425,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final user = FirebaseAuth.instance.currentUser;
     return Scaffold(
       backgroundColor: AppColors.bg,
-      appBar: AppBar(
-        title: const Text('마이페이지'),
-        backgroundColor: AppColors.bg,
-        elevation: 0,
-      ),
+      appBar: AppBar(title: const Text('마이페이지')),
       body: _isDeleting
           ? const Center(
               child: CircularProgressIndicator(color: AppColors.primary),
             )
           : ListView(
-              padding: const EdgeInsets.all(20),
+              padding: const EdgeInsets.fromLTRB(
+                kPagePadding,
+                8,
+                kPagePadding,
+                32,
+              ),
               children: [
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: AppColors.surface,
-                    borderRadius: BorderRadius.circular(18),
-                    boxShadow: kSoftShadow,
-                  ),
+                // 프로필 헤더 — 카드 없이 여백과 타이포로만 구성한 플랫 헤더.
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 20),
                   child: Row(
                     children: [
                       StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
@@ -468,7 +465,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   child: UserAvatar(
                                     nickname: user?.displayName ?? '익명',
                                     photoUrl: photoUrl,
-                                    size: 58,
+                                    size: 64,
                                   ),
                                 ),
                                 if (_isChangingPhoto)
@@ -490,7 +487,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   child: Container(
                                     padding: const EdgeInsets.all(4),
                                     decoration: const BoxDecoration(
-                                      color: AppColors.primary,
+                                      color: AppColors.ink,
                                       shape: BoxShape.circle,
                                       border: Border.fromBorderSide(
                                         BorderSide(
@@ -519,12 +516,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             Text(
                               user?.displayName ?? '익명',
                               style: const TextStyle(
-                                fontSize: 18,
+                                fontSize: 20,
                                 fontWeight: FontWeight.w800,
+                                letterSpacing: -0.4,
                                 color: AppColors.ink,
                               ),
                             ),
-                            const SizedBox(height: 4),
+                            const SizedBox(height: 3),
                             Text(
                               user?.email ?? '',
                               style: const TextStyle(
@@ -546,71 +544,85 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ],
                   ),
                 ),
-                const SizedBox(height: 20),
-                _ProfileMenuTile(
-                  icon: Icons.bookmark_border_rounded,
-                  label: '찜한 글',
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const SavedItemsScreen(),
-                      ),
-                    );
-                  },
+                const SectionLabel('보관함'),
+                const SizedBox(height: 10),
+                GroupSurface(
+                  children: [
+                    _ProfileMenuTile(
+                      icon: Icons.bookmark_border_rounded,
+                      label: '찜한 글',
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const SavedItemsScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                    _ProfileMenuTile(
+                      icon: Icons.notifications_active_outlined,
+                      label: '키워드 알림',
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const SavedSearchesScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 12),
-                _ProfileMenuTile(
-                  icon: Icons.notifications_active_outlined,
-                  label: '키워드 알림',
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const SavedSearchesScreen(),
-                      ),
-                    );
-                  },
+                const SizedBox(height: 24),
+                const SectionLabel('설정'),
+                const SizedBox(height: 10),
+                GroupSurface(
+                  children: [
+                    _ProfileMenuTile(
+                      icon: Icons.tune_rounded,
+                      label: '알림 설정',
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) =>
+                                const NotificationSettingsScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                    _ProfileMenuTile(
+                      icon: Icons.block_outlined,
+                      label: '차단 관리',
+                      onTap: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const BlockedUsersScreen(),
+                          ),
+                        );
+                      },
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 12),
-                _ProfileMenuTile(
-                  icon: Icons.tune_rounded,
-                  label: '알림 설정',
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) =>
-                            const NotificationSettingsScreen(),
-                      ),
-                    );
-                  },
-                ),
-                const SizedBox(height: 12),
-                _ProfileMenuTile(
-                  icon: Icons.block_outlined,
-                  label: '차단 관리',
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const BlockedUsersScreen(),
-                      ),
-                    );
-                  },
-                ),
-                const SizedBox(height: 12),
-                _ProfileMenuTile(
-                  icon: Icons.logout_rounded,
-                  label: '로그아웃',
-                  onTap: _confirmLogout,
-                ),
-                const SizedBox(height: 12),
-                _ProfileMenuTile(
-                  icon: Icons.person_remove_outlined,
-                  label: '회원 탈퇴',
-                  labelColor: AppColors.danger,
-                  onTap: _deleteAccount,
+                const SizedBox(height: 24),
+                const SectionLabel('계정'),
+                const SizedBox(height: 10),
+                GroupSurface(
+                  children: [
+                    _ProfileMenuTile(
+                      icon: Icons.logout_rounded,
+                      label: '로그아웃',
+                      onTap: _confirmLogout,
+                    ),
+                    _ProfileMenuTile(
+                      icon: Icons.person_remove_outlined,
+                      label: '회원 탈퇴',
+                      labelColor: AppColors.danger,
+                      onTap: _deleteAccount,
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -634,28 +646,21 @@ class _ProfileMenuTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = labelColor ?? AppColors.ink;
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: kSoftShadow,
-      ),
-      child: Material(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(16),
-        clipBehavior: Clip.antiAlias,
-        child: ListTile(
-          leading: Icon(icon, color: color),
-          title: Text(
-            label,
-            style: TextStyle(color: color, fontWeight: FontWeight.w600),
-          ),
-          trailing: const Icon(
-            Icons.chevron_right_rounded,
-            color: Color(0xFFC7CAD6),
-          ),
-          onTap: onTap,
+    return ListTile(
+      leading: Icon(icon, color: labelColor ?? AppColors.inkMuted),
+      title: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w600,
+          fontSize: 14.5,
         ),
       ),
+      trailing: const Icon(
+        Icons.chevron_right_rounded,
+        color: AppColors.inkFaint,
+      ),
+      onTap: onTap,
     );
   }
 }

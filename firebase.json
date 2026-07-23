@@ -1,1 +1,36 @@
-{"firestore":{"rules":"firestore.rules","indexes":"firestore.indexes.json","database":"(default)"},"flutter":{"platforms":{"android":{"default":{"projectId":"yeogi-itdae","appId":"1:450095922894:android:d6cb609341b5584471da9f","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"yeogi-itdae","configurations":{"android":"1:450095922894:android:d6cb609341b5584471da9f","ios":"1:450095922894:ios:b5bbdf93368b041671da9f","web":"1:450095922894:web:1b35dae03733385471da9f"}}}}}}
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json",
+    "database": "(default)"
+  },
+  "emulators": {
+    "firestore": {
+      "port": 8085
+    },
+    "auth": {
+      "port": 9099
+    }
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "yeogi-itdae",
+          "appId": "1:450095922894:android:d6cb609341b5584471da9f",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "yeogi-itdae",
+          "configurations": {
+            "android": "1:450095922894:android:d6cb609341b5584471da9f",
+            "ios": "1:450095922894:ios:b5bbdf93368b041671da9f",
+            "web": "1:450095922894:web:1b35dae03733385471da9f"
+          }
+        }
+      }
+    }
+  }
+}

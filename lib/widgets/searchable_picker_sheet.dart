@@ -16,9 +16,9 @@ Future<String?> showSearchablePickerSheet({
   return showModalBottomSheet<String>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: Colors.white,
+    backgroundColor: AppColors.surface,
     shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+      borderRadius: BorderRadius.vertical(top: Radius.circular(kRadiusXl)),
     ),
     builder: (context) => _SearchablePickerSheet(
       title: title,
@@ -69,7 +69,7 @@ class _SearchablePickerSheetState extends State<_SearchablePickerSheet> {
         child: Column(
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+              padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
               child: Row(
                 children: [
                   Expanded(
@@ -91,35 +91,12 @@ class _SearchablePickerSheetState extends State<_SearchablePickerSheet> {
               ),
             ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20),
+              padding: const EdgeInsets.symmetric(horizontal: kPagePadding),
               child: TextField(
                 controller: _searchController,
                 autofocus: false,
                 onChanged: (value) => setState(() => _query = value),
-                decoration: InputDecoration(
-                  hintText: '검색',
-                  prefixIcon: const Icon(
-                    Icons.search_rounded,
-                    color: AppColors.inkMuted,
-                  ),
-                  filled: true,
-                  fillColor: AppColors.surface,
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(30),
-                    borderSide: const BorderSide(color: AppColors.line),
-                  ),
-                  enabledBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(30),
-                    borderSide: const BorderSide(color: AppColors.line),
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(30),
-                    borderSide: const BorderSide(
-                      color: AppColors.primary,
-                      width: 1.5,
-                    ),
-                  ),
-                ),
+                decoration: appSearchDecoration('검색'),
               ),
             ),
             const SizedBox(height: 8),

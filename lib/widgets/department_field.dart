@@ -12,8 +12,14 @@ const String _kManualEntryLabel = '직접 입력';
 class DepartmentField extends StatefulWidget {
   final TextEditingController controller;
   final String? Function(String?)? validator;
+  final Color? fillColor;
 
-  const DepartmentField({super.key, required this.controller, this.validator});
+  const DepartmentField({
+    super.key,
+    required this.controller,
+    this.validator,
+    this.fillColor,
+  });
 
   @override
   State<DepartmentField> createState() => _DepartmentFieldState();
@@ -64,6 +70,7 @@ class _DepartmentFieldState extends State<DepartmentField> {
       decoration: appInputDecoration(
         '학과',
         hint: _isFreeform ? '학과명을 입력해주세요' : '탭하여 선택',
+        fillColor: widget.fillColor,
         suffixIcon: IconButton(
           tooltip: _isFreeform ? '목록에서 선택' : '직접 입력',
           icon: Icon(

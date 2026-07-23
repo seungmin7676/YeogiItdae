@@ -1,13 +1,17 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../models/lost_found_item.dart';
+import '../services/bulk_item_actions.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_ui.dart';
+import '../widgets/confirm_dialog.dart';
 import '../widgets/feed_message.dart';
 import '../widgets/item_card.dart';
+import '../widgets/skeleton.dart';
 import 'item_detail_sheet.dart';
+import 'register_item_screen.dart';
 
 /// 화면: 내가 등록한 글 모아보기
 class MyPostsScreen extends StatefulWidget {
@@ -29,6 +33,12 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
   bool _selectionMode = false;
   final Set<String> _selectedIds = {};
 
+  // 일괄 작업(거래완료/삭제)이 진행 중인지. 버튼 연타·중복 다이얼로그로
+  // 같은 작업이 두 번 실행되는 것을 UI 계층에서 막는다. (서비스 계층의
+  // in-flight 방어와 이중 안전장치)
+  bool _isBulkWorking = false;
+  final BulkItemActions _bulkActions = BulkItemActions(itemsCollection);
+
   Query<Map<String, dynamic>> _query(String? uid) => itemsCollection
       .where('authorUid', isEqualTo: uid)
       .orderBy('createdAt', descending: !_sortOldestFirst)
@@ -43,18 +53,6 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
       default:
         return items;
     }
-  }
-
-  void _showDetail(BuildContext context, LostFoundItem item) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-      ),
-      builder: (context) => ItemDetailSheet(item: item),
-    );
   }
 
   void _endSelectionMode() {
@@ -82,61 +80,71 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
     });
   }
 
-  Future<void> _bulkMarkResolved() async {
-    if (_selectedIds.isEmpty) return;
-    final batch = FirebaseFirestore.instance.batch();
-    for (final id in _selectedIds) {
-      batch.update(itemsCollection.doc(id), {'resolved': true});
+  /// 일괄 작업 결과를 선택 상태에 반영한다. 성공했거나 이미 삭제된 글만
+  /// 선택 해제하고, 실패한 글은 선택 상태로 남겨 그대로 재시도할 수 있게 한다.
+  void _applyBulkResult(BulkActionResult result, String verb) {
+    setState(() {
+      _selectedIds.removeAll(result.succeeded);
+      _selectedIds.removeAll(result.notFound);
+      if (_selectedIds.isEmpty) _selectionMode = false;
+    });
+
+    final parts = <String>[
+      if (result.succeeded.isNotEmpty) '${result.succeeded.length}개를 $verb했어요.',
+      if (result.notFound.isNotEmpty)
+        '${result.notFound.length}개는 이미 삭제된 글이에요.',
+      if (result.hasFailures)
+        '${result.failed.length}개는 처리하지 못했어요. 선택 상태로 남겨두었으니 다시 시도해주세요.',
+    ];
+    if (parts.isNotEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(parts.join(' '))));
     }
+  }
+
+  Future<void> _bulkMarkResolved() async {
+    if (_isBulkWorking || _selectedIds.isEmpty) return;
+    setState(() => _isBulkWorking = true);
     try {
-      await batch.commit();
-      if (mounted) _endSelectionMode();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('일괄 처리에 실패했습니다: $e')));
-      }
+      final confirmed = await showConfirmDialog(
+        context,
+        title: '거래완료 처리',
+        content: '선택한 ${_selectedIds.length}개의 글을 거래완료로 처리하시겠습니까?',
+        confirmLabel: '완료 처리',
+      );
+      if (!confirmed || !mounted) return;
+
+      final result = await _bulkActions.markResolved(_selectedIds);
+      if (!mounted) return;
+      _applyBulkResult(result, '거래완료로 처리');
+    } finally {
+      // 오류가 나더라도 버튼이 영구적으로 잠기지 않도록 항상 복구한다.
+      if (mounted) setState(() => _isBulkWorking = false);
     }
   }
 
   Future<void> _bulkDelete() async {
-    if (_selectedIds.isEmpty) return;
-    final count = _selectedIds.length;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('선택한 글 삭제'),
-        content: Text('선택한 $count개의 글을 삭제하시겠습니까?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('취소'),
-          ),
-          TextButton(
-            onPressed: () {
-              HapticFeedback.mediumImpact();
-              Navigator.pop(context, true);
-            },
-            child: const Text('삭제', style: TextStyle(color: AppColors.danger)),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-    final batch = FirebaseFirestore.instance.batch();
-    for (final id in _selectedIds) {
-      batch.delete(itemsCollection.doc(id));
-    }
+    if (_isBulkWorking || _selectedIds.isEmpty) return;
+    // 다이얼로그가 뜨기 전 연속 탭으로 확인 다이얼로그가 겹쳐 쌓여
+    // 삭제가 두 번 실행되지 않도록, 다이얼로그를 띄우기 전에 잠근다.
+    setState(() => _isBulkWorking = true);
     try {
-      await batch.commit();
-      if (mounted) _endSelectionMode();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('삭제에 실패했습니다: $e')));
-      }
+      final confirmed = await showConfirmDialog(
+        context,
+        title: '선택한 글 삭제',
+        content: '선택한 ${_selectedIds.length}개의 글을 삭제하시겠습니까?',
+        confirmLabel: '삭제',
+        danger: true,
+        haptic: true,
+      );
+      if (!confirmed || !mounted) return;
+
+      final result = await _bulkActions.deleteItems(_selectedIds);
+      if (!mounted) return;
+      _applyBulkResult(result, '삭제');
+    } finally {
+      if (mounted) setState(() => _isBulkWorking = false);
     }
   }
 
@@ -147,8 +155,6 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
       backgroundColor: AppColors.bg,
       appBar: AppBar(
         title: Text(_selectionMode ? '${_selectedIds.length}개 선택됨' : '내 글'),
-        backgroundColor: AppColors.bg,
-        elevation: 0,
         leading: _selectionMode
             ? IconButton(
                 icon: const Icon(Icons.close_rounded),
@@ -188,37 +194,62 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
       ),
       body: Column(
         children: [
-          _buildStatusChips(),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              kPagePadding,
+              12,
+              kPagePadding,
+              12,
+            ),
+            child: AppSegmented(
+              labels: const ['전체', '진행중', '거래완료'],
+              selectedIndex: _statusFilter,
+              onChanged: (index) => setState(() => _statusFilter = index),
+            ),
+          ),
+          const Divider(),
           Expanded(
             child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: _query(uid).snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
-                  return const FeedMessage(
+                  return FeedMessage(
                     icon: Icons.error_outline_rounded,
-                    text: '내 글을 불러오지 못했습니다.',
+                    title: '내 글을 불러오지 못했어요',
+                    text: '네트워크 상태를 확인한 뒤 다시 시도해주세요.',
+                    actionLabel: '다시 시도',
+                    onAction: () => setState(() {}),
                   );
                 }
                 if (!snapshot.hasData) {
-                  return const Center(
-                    child: CircularProgressIndicator(color: AppColors.primary),
-                  );
+                  return const ItemListSkeleton();
                 }
 
                 final docs = snapshot.data!.docs;
-                final allItems = docs.map(LostFoundItem.fromDoc).toList();
+                final allItems = LostFoundItem.fromDocs(docs);
                 final items = _applyStatusFilter(allItems);
                 final canLoadMore = docs.length == _pageSize * _loadedPages;
                 if (allItems.isEmpty) {
-                  return const FeedMessage(
+                  return FeedMessage(
                     icon: Icons.receipt_long_outlined,
-                    text: '아직 등록한 글이 없어요.\n첫 게시글을 등록해보세요!',
+                    title: '아직 등록한 글이 없어요',
+                    text: '잃어버렸거나 주운 물건이 있다면\n첫 게시글을 등록해보세요.',
+                    actionLabel: '글 등록하기',
+                    onAction: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => const RegisterItemScreen(),
+                      ),
+                    ),
                   );
                 }
                 if (items.isEmpty) {
-                  return const FeedMessage(
+                  return FeedMessage(
                     icon: Icons.filter_alt_off_outlined,
-                    text: '조건에 맞는 글이 없어요.',
+                    title: '조건에 맞는 글이 없어요',
+                    text: '상태 필터를 바꾸면 다른 글을 볼 수 있어요.',
+                    actionLabel: '전체 보기',
+                    onAction: () => setState(() => _statusFilter = 0),
                   );
                 }
 
@@ -226,73 +257,34 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
                   color: AppColors.primary,
                   onRefresh: () =>
                       _query(uid).get(const GetOptions(source: Source.server)),
-                  child: ListView.builder(
-                    padding: const EdgeInsets.all(20),
+                  child: ListView.separated(
+                    padding: const EdgeInsets.only(bottom: 32),
                     itemCount: items.length + (canLoadMore ? 1 : 0),
+                    separatorBuilder: (context, index) => const Divider(),
                     itemBuilder: (context, index) {
                       if (index == items.length) {
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 16),
-                          child: Center(
-                            child: OutlinedButton(
-                              onPressed: () =>
-                                  setState(() => _loadedPages += 1),
-                              child: const Text('더 보기'),
-                            ),
-                          ),
+                        return LoadMoreButton(
+                          isLoading: false,
+                          onPressed: () => setState(() => _loadedPages += 1),
                         );
                       }
                       final item = items[index];
                       final id = item.id;
                       final selected = id != null && _selectedIds.contains(id);
-                      return Stack(
-                        children: [
-                          GestureDetector(
-                            onLongPress: id == null
-                                ? null
-                                : () => _enterSelectionMode(id),
-                            child: ItemCard(
-                              item: item,
-                              onTap: () {
-                                if (_selectionMode) {
-                                  if (id != null) _toggleSelected(id);
-                                } else {
-                                  _showDetail(context, item);
-                                }
-                              },
-                            ),
-                          ),
-                          if (_selectionMode)
-                            Positioned(
-                              top: 22,
-                              right: 10,
-                              child: IgnorePointer(
-                                child: Container(
-                                  width: 24,
-                                  height: 24,
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: selected
-                                        ? AppColors.primary
-                                        : Colors.white,
-                                    border: Border.all(
-                                      color: selected
-                                          ? AppColors.primary
-                                          : AppColors.line,
-                                      width: 1.5,
-                                    ),
-                                  ),
-                                  child: selected
-                                      ? const Icon(
-                                          Icons.check_rounded,
-                                          size: 16,
-                                          color: Colors.white,
-                                        )
-                                      : null,
-                                ),
-                              ),
-                            ),
-                        ],
+                      return ItemCard(
+                        item: item,
+                        selectionMode: _selectionMode,
+                        selected: selected,
+                        onLongPress: id == null
+                            ? null
+                            : () => _enterSelectionMode(id),
+                        onTap: () {
+                          if (_selectionMode) {
+                            if (id != null) _toggleSelected(id);
+                          } else {
+                            showItemDetailSheet(context, item);
+                          }
+                        },
                       );
                     },
                   ),
@@ -303,74 +295,55 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
         ],
       ),
       bottomNavigationBar: _selectionMode && _selectedIds.isNotEmpty
-          ? SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _bulkMarkResolved,
-                        icon: const Icon(Icons.check_circle_outline),
-                        label: const Text('거래완료 처리'),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _bulkDelete,
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: AppColors.danger,
-                          side: const BorderSide(color: AppColors.danger),
+          ? Container(
+              decoration: const BoxDecoration(
+                color: AppColors.surface,
+                border: Border(top: BorderSide(color: AppColors.line)),
+              ),
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    kPagePadding,
+                    10,
+                    kPagePadding,
+                    12,
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _isBulkWorking ? null : _bulkMarkResolved,
+                          icon: _isBulkWorking
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: AppColors.primary,
+                                  ),
+                                )
+                              : const Icon(Icons.check_circle_outline),
+                          label: const Text('거래완료 처리'),
                         ),
-                        icon: const Icon(Icons.delete_outline),
-                        label: const Text('삭제'),
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: _isBulkWorking ? null : _bulkDelete,
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: AppColors.danger,
+                            side: const BorderSide(color: AppColors.danger),
+                          ),
+                          icon: const Icon(Icons.delete_outline),
+                          label: const Text('삭제'),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
             )
           : null,
-    );
-  }
-
-  Widget _buildStatusChips() {
-    const labels = ['전체', '진행중', '거래완료'];
-    return SizedBox(
-      height: 52,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-        itemCount: labels.length,
-        separatorBuilder: (context, index) => const SizedBox(width: 8),
-        itemBuilder: (context, index) {
-          final selected = _statusFilter == index;
-          return GestureDetector(
-            onTap: () => setState(() => _statusFilter = index),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(horizontal: 18),
-              decoration: BoxDecoration(
-                color: selected ? AppColors.primary : AppColors.surface,
-                borderRadius: BorderRadius.circular(30),
-                border: Border.all(
-                  color: selected ? AppColors.primary : AppColors.line,
-                ),
-              ),
-              child: Text(
-                labels[index],
-                style: TextStyle(
-                  color: selected ? Colors.white : AppColors.inkMuted,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13.5,
-                ),
-              ),
-            ),
-          );
-        },
-      ),
     );
   }
 }
