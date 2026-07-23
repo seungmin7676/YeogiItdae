@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -8,8 +9,11 @@ import 'package:image_picker/image_picker.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/cloudinary_service.dart';
+import '../services/error_messages.dart';
 import '../services/image_save_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_user_data.dart';
+import '../widgets/confirm_dialog.dart';
 import '../widgets/feed_message.dart';
 import '../widgets/image_source_sheet.dart';
 import '../widgets/user_avatar.dart';
@@ -198,12 +202,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _messageController.clear();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('메시지 전송에 실패했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('메시지 전송에 실패했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
     }
   }
+
+  // 등록 화면(RegisterItemScreen)의 첨부 제한과 동일하게, 한 번에 너무 많은
+  // 사진을 골라 순차 업로드가 오래 걸리거나 실수로 대량 전송하는 걸 막는다.
+  static const int _maxImagesPerSend = 5;
 
   Future<void> _sendImage() async {
     final source = await showImageSourceSheet(context);
@@ -226,6 +234,18 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (picked.isEmpty || !mounted) return;
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
+
+    if (picked.length > _maxImagesPerSend) {
+      final excess = picked.length - _maxImagesPerSend;
+      picked = picked.take(_maxImagesPerSend).toList();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '사진은 한 번에 최대 $_maxImagesPerSend장까지 보낼 수 있어 $excess장은 제외됐어요.',
+          ),
+        ),
+      );
+    }
 
     setState(() => _isSendingImage = true);
     try {
@@ -259,9 +279,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       await batch.commit();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('사진 전송에 실패했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('사진 전송에 실패했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
     } finally {
       if (mounted) setState(() => _isSendingImage = false);
@@ -322,7 +342,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             GestureDetector(
               onTap: () => Navigator.pop(dialogContext),
               child: Center(
-                child: InteractiveViewer(child: Image.network(url)),
+                child: InteractiveViewer(
+                  child: CachedNetworkImage(imageUrl: url),
+                ),
               ),
             ),
             SafeArea(
@@ -360,26 +382,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _leaveChat() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('채팅방 나가기'),
-        content: const Text(
-          '채팅방을 나가시겠습니까?\n나가면 이 채팅방은 목록에서 사라지고, 이전 메시지 기록도 더 이상 볼 수 없습니다.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('취소'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('나가기', style: TextStyle(color: AppColors.danger)),
-          ),
-        ],
-      ),
+    final confirmed = await showConfirmDialog(
+      context,
+      title: '채팅방 나가기',
+      content: '채팅방을 나가시겠습니까?\n나가면 이 채팅방은 목록에서 사라지고, 이전 메시지 기록도 더 이상 볼 수 없습니다.',
+      confirmLabel: '나가기',
+      danger: true,
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
     final myUid = FirebaseAuth.instance.currentUser?.uid;
     if (myUid == null || !mounted) return;
 
@@ -395,53 +405,101 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       navigator.pop();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('나가기에 실패했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('나가기에 실패했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
     }
   }
 
+  // 거래완료 요청/확인/완료 처리 버튼의 연속 탭으로 같은 작업이 중복
+  // 실행되는 것을 막는다. 특히 완료 처리(_finalizeResolution)는 배너가
+  // 서버 스냅샷으로 사라지기 전까지 계속 눌릴 수 있다.
+  bool _isResolutionBusy = false;
+
   Future<void> _requestResolution() async {
+    if (_isResolutionBusy) return;
     final myUid = FirebaseAuth.instance.currentUser?.uid;
     if (myUid == null) return;
 
-    final chatDoc = await FirebaseFirestore.instance
-        .collection('chats')
-        .doc(widget.chatId)
-        .get();
-    final itemAuthorUid = chatDoc.data()?['itemAuthorUid'] as String?;
-    if (itemAuthorUid != myUid) {
+    setState(() => _isResolutionBusy = true);
+    try {
+      final chatDoc = await FirebaseFirestore.instance
+          .collection('chats')
+          .doc(widget.chatId)
+          .get();
+      final itemAuthorUid = chatDoc.data()?['itemAuthorUid'] as String?;
+      if (itemAuthorUid != myUid) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('게시글 작성자만 거래완료를 요청할 수 있어요.')),
+          );
+        }
+        return;
+      }
+      // 게시글이 이미 삭제된 채팅방은 완료 처리 시 itemsCollection 업데이트가
+      // 실패하는 막다른 흐름이 되므로, 애초에 요청 자체를 막는다.
+      if (chatDoc.data()?['itemDeleted'] == true) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('삭제된 게시글은 거래완료 처리를 할 수 없어요.')),
+          );
+        }
+        return;
+      }
+
+      await FirebaseFirestore.instance
+          .collection('chats')
+          .doc(widget.chatId)
+          .set({'resolutionStatus': 'pending'}, SetOptions(merge: true));
+
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('상대방에게 거래완료 확인을 요청했어요.')));
+      }
+    } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('게시글 작성자만 거래완료를 요청할 수 있어요.')),
+          SnackBar(content: Text('요청에 실패했습니다: ${friendlyErrorMessage(e)}')),
         );
       }
-      return;
-    }
-
-    await FirebaseFirestore.instance.collection('chats').doc(widget.chatId).set(
-      {'resolutionStatus': 'pending'},
-      SetOptions(merge: true),
-    );
-
-    if (mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('상대방에게 거래완료 확인을 요청했어요.')));
+    } finally {
+      if (mounted) setState(() => _isResolutionBusy = false);
     }
   }
 
   Future<void> _confirmResolution() async {
-    await FirebaseFirestore.instance.collection('chats').doc(widget.chatId).set(
-      {'resolutionStatus': 'confirmed'},
-      SetOptions(merge: true),
-    );
+    if (_isResolutionBusy) return;
+    setState(() => _isResolutionBusy = true);
+    try {
+      await FirebaseFirestore.instance
+          .collection('chats')
+          .doc(widget.chatId)
+          .set({'resolutionStatus': 'confirmed'}, SetOptions(merge: true));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('확인에 실패했습니다: ${friendlyErrorMessage(e)}')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isResolutionBusy = false);
+    }
   }
 
   Future<void> _finalizeResolution(String itemId) async {
+    if (_isResolutionBusy) return;
+    setState(() => _isResolutionBusy = true);
     try {
-      await itemsCollection.doc(itemId).update({'resolved': true});
+      try {
+        await itemsCollection.doc(itemId).update({'resolved': true});
+      } on FirebaseException catch (e) {
+        // 배너를 띄운 뒤 게시글이 삭제되는 등, itemDeleted 플래그가 아직
+        // 반영되기 전의 경합으로 이미 지워진 문서를 건드리게 될 수 있다.
+        // 이 경우 게시글 쪽 업데이트만 건너뛰고 채팅 쪽 정리는 계속 진행한다.
+        if (e.code != 'not-found') rethrow;
+      }
 
       // 같은 글로 진행 중이던 다른 채팅이 있다면 그 쪽의 배너도 함께 정리한다
       // (현재 채팅방도 itemId가 같으므로 이 목록에 포함된다).
@@ -464,10 +522,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('처리에 실패했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('처리에 실패했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
+    } finally {
+      if (mounted) setState(() => _isResolutionBusy = false);
     }
   }
 
@@ -475,28 +535,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final myUid = FirebaseAuth.instance.currentUser?.uid;
     if (myUid == null) return;
 
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('실명 공개'),
-        content: const Text(
+    final confirmed = await showConfirmDialog(
+      context,
+      title: '실명 공개',
+      content:
           '상대방에게 가입 시 등록한 실명을 공개합니다.\n'
           '물품 인수·인계 등 신원 확인이 필요할 때만 사용해주세요.\n'
           '공개한 실명은 취소할 수 없습니다.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('취소'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('공개하기'),
-          ),
-        ],
-      ),
+      confirmLabel: '공개하기',
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
 
     try {
       final privateDoc = await FirebaseFirestore.instance
@@ -525,34 +573,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('실명 공개에 실패했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('실명 공개에 실패했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
     }
   }
 
   Future<void> _blockUser() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('사용자 차단'),
-        content: Text(
+    final confirmed = await showConfirmDialog(
+      context,
+      title: '사용자 차단',
+      content:
           '${widget.otherNickname}님을 차단하시겠습니까?\n차단하면 이 사용자는 더 이상 채팅을 걸거나 메시지를 보낼 수 없습니다.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('취소'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('차단', style: TextStyle(color: AppColors.danger)),
-          ),
-        ],
-      ),
+      confirmLabel: '차단',
+      danger: true,
     );
-    if (confirmed != true) return;
+    if (!confirmed) return;
     final myUid = FirebaseAuth.instance.currentUser?.uid;
     if (myUid == null || !mounted) return;
 
@@ -568,32 +605,23 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         SnackBar(content: Text('${widget.otherNickname}님을 차단했습니다.')),
       );
     } catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text('차단에 실패했습니다: $e')));
+      messenger.showSnackBar(
+        SnackBar(content: Text('차단에 실패했습니다: ${friendlyErrorMessage(e)}')),
+      );
       return;
     }
 
     if (!mounted) return;
-    final shouldLeave = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('채팅방 나가기'),
-        content: const Text(
+    final shouldLeave = await showConfirmDialog(
+      context,
+      title: '채팅방 나가기',
+      content:
           '이 채팅창을 나가시겠습니까?\n'
           '나가지 않아도 차단한 상대와의 대화는 채팅 목록에 다시 나타나지 않습니다.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('아니요'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('나가기'),
-          ),
-        ],
-      ),
+      cancelLabel: '아니요',
+      confirmLabel: '나가기',
     );
-    if (shouldLeave != true || !mounted) return;
+    if (!shouldLeave || !mounted) return;
 
     final navigator = Navigator.of(context);
     try {
@@ -604,7 +632,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       navigator.pop();
     } catch (e) {
       if (mounted) {
-        messenger.showSnackBar(SnackBar(content: Text('나가기에 실패했습니다: $e')));
+        messenger.showSnackBar(
+          SnackBar(content: Text('나가기에 실패했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
     }
   }
@@ -692,9 +722,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 .snapshots(),
             builder: (context, snapshot) {
               final myUid = FirebaseAuth.instance.currentUser?.uid;
-              final itemAuthorUid =
-                  snapshot.data?.data()?['itemAuthorUid'] as String?;
+              final chatData = snapshot.data?.data();
+              final itemAuthorUid = chatData?['itemAuthorUid'] as String?;
               final isOwner = myUid != null && myUid == itemAuthorUid;
+              final itemDeleted = chatData?['itemDeleted'] == true;
 
               return PopupMenuButton<String>(
                 icon: const Icon(Icons.more_vert),
@@ -705,9 +736,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   if (value == 'block') _blockUser();
                 },
                 itemBuilder: (context) => [
-                  // 거래완료 확인 요청은 게시글 작성자만 할 수 있는 동작이라
-                  // 작성자가 아닌 쪽에는 애초에 메뉴 항목을 보여주지 않는다.
-                  if (isOwner)
+                  // 거래완료 확인 요청은 게시글 작성자만, 그리고 게시글이
+                  // 아직 남아있을 때만 할 수 있는 동작이다.
+                  if (isOwner && !itemDeleted)
                     const PopupMenuItem(
                       value: 'resolve',
                       child: Text('거래완료 확인 요청하기'),
@@ -742,6 +773,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               final itemAuthorUid = data['itemAuthorUid'] as String?;
               final isOwner = myUid != null && myUid == itemAuthorUid;
               final itemId = data['itemId'] as String?;
+              final itemDeleted = data['itemDeleted'] == true;
               final resolutionStatus =
                   data['resolutionStatus'] as String? ?? 'none';
 
@@ -768,7 +800,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 );
               }
 
-              if (resolutionStatus == 'pending') {
+              if (itemDeleted) {
+                banners.add(
+                  const _ChatBanner(
+                    icon: Icons.info_outline_rounded,
+                    text: '이 채팅의 게시글은 삭제되었어요. 거래완료 처리는 더 이상 할 수 없어요.',
+                  ),
+                );
+              } else if (resolutionStatus == 'pending') {
                 banners.add(
                   isOwner
                       ? const _ChatBanner(
@@ -779,7 +818,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                           icon: Icons.task_alt_outlined,
                           text: '${widget.otherNickname}님이 거래완료를 요청했어요.',
                           actionLabel: '확인',
-                          onAction: _confirmResolution,
+                          onAction: _isResolutionBusy
+                              ? null
+                              : _confirmResolution,
                         ),
                 );
               } else if (resolutionStatus == 'confirmed' &&
@@ -790,7 +831,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     icon: Icons.check_circle_outline_rounded,
                     text: '상대방이 거래완료를 확인했어요.',
                     actionLabel: '완료 처리',
-                    onAction: () => _finalizeResolution(itemId),
+                    onAction: _isResolutionBusy
+                        ? null
+                        : () => _finalizeResolution(itemId),
                   ),
                 );
               }
@@ -805,17 +848,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
             // 대신 각자 자신의 차단 목록을 기준으로 상대의 메시지를
             // 걸러내면, 차단당한 쪽은 평소처럼 메시지가 보내지고
             // 차단한 쪽에는 그 메시지가 전혀 보이지 않게 된다.
-            child: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance
-                  .collection('blocks')
-                  .doc(myUid ?? '_')
-                  .snapshots(),
-              builder: (context, myBlocksSnapshot) {
-                final myBlockedUids = Set<String>.from(
-                  (myBlocksSnapshot.data?.data()?['blockedUsers'] as Map?)
-                          ?.keys ??
-                      const [],
-                );
+            child: Builder(
+              builder: (context) {
+                final myBlockedUids = AppUserData.of(context).blockedUids;
 
                 return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
                   stream: FirebaseFirestore.instance
@@ -879,7 +914,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                             if (docs.isEmpty) {
                               return const FeedMessage(
                                 icon: Icons.chat_bubble_outline_rounded,
-                                text: '첫 메시지를 보내보세요!',
+                                title: '대화를 시작해보세요',
+                                text: '물건의 상태나 전달 방법을\n첫 메시지로 보내보세요.',
                               );
                             }
 
@@ -929,24 +965,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                           ),
                                           child: ClipRRect(
                                             borderRadius: BorderRadius.circular(
-                                              16,
+                                              kRadiusLg,
                                             ),
-                                            child: Image.network(
-                                              imageUrl,
+                                            child: CachedNetworkImage(
+                                              imageUrl: imageUrl,
                                               fit: BoxFit.cover,
-                                              errorBuilder:
+                                              errorWidget:
                                                   (
                                                     context,
+                                                    url,
                                                     error,
-                                                    stackTrace,
                                                   ) => Container(
                                                     width: 160,
                                                     height: 160,
-                                                    color: AppColors.bg,
+                                                    color: AppColors.surfaceAlt,
                                                     child: const Icon(
                                                       Icons
                                                           .broken_image_outlined,
-                                                      color: Color(0xFFC7CAD6),
+                                                      color: AppColors.inkFaint,
                                                     ),
                                                   ),
                                             ),
@@ -988,15 +1024,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                                         decoration: BoxDecoration(
                                           color: isMine
                                               ? AppColors.primary
-                                              : Colors.white,
-                                          borderRadius: BorderRadius.circular(
-                                            16,
+                                              : AppColors.surfaceAlt,
+                                          borderRadius: BorderRadius.only(
+                                            topLeft: const Radius.circular(
+                                              kRadiusLg,
+                                            ),
+                                            topRight: const Radius.circular(
+                                              kRadiusLg,
+                                            ),
+                                            bottomLeft: Radius.circular(
+                                              isMine ? kRadiusLg : 4,
+                                            ),
+                                            bottomRight: Radius.circular(
+                                              isMine ? 4 : kRadiusLg,
+                                            ),
                                           ),
-                                          border: isMine
-                                              ? null
-                                              : Border.all(
-                                                  color: AppColors.line,
-                                                ),
                                         ),
                                         child: Text(
                                           messageText,
@@ -1021,63 +1063,84 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               },
             ),
           ),
-          SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                children: [
-                  IconButton(
-                    onPressed: _isSendingImage ? null : _sendImage,
-                    tooltip: '사진 보내기',
-                    icon: _isSendingImage
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.add_photo_alternate_outlined),
-                    color: AppColors.inkMuted,
-                  ),
-                  Expanded(
-                    child: TextField(
-                      controller: _messageController,
-                      onChanged: _onMessageChanged,
-                      decoration: InputDecoration(
-                        hintText: '메시지 입력',
-                        filled: true,
-                        fillColor: Colors.white,
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 12,
+          // 입력 바 — 상단 헤어라인으로 대화 영역과 구분하고, 알약 입력창 +
+          // 채워진 원형 전송 버튼으로 구성한다.
+          Container(
+            decoration: const BoxDecoration(
+              color: AppColors.surface,
+              border: Border(top: BorderSide(color: AppColors.line)),
+            ),
+            child: SafeArea(
+              top: false,
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 8, 12, 8),
+                child: Row(
+                  children: [
+                    IconButton(
+                      onPressed: _isSendingImage ? null : _sendImage,
+                      tooltip: '사진 보내기',
+                      icon: _isSendingImage
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.add_photo_alternate_outlined),
+                      color: AppColors.inkMuted,
+                    ),
+                    Expanded(
+                      child: TextField(
+                        controller: _messageController,
+                        onChanged: _onMessageChanged,
+                        decoration: InputDecoration(
+                          hintText: '메시지 입력',
+                          hintStyle: const TextStyle(color: AppColors.inkFaint),
+                          filled: true,
+                          fillColor: AppColors.surfaceAlt,
+                          isDense: true,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 16,
+                            vertical: 11,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(kRadiusPill),
+                            borderSide: BorderSide.none,
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(kRadiusPill),
+                            borderSide: BorderSide.none,
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(kRadiusPill),
+                            borderSide: const BorderSide(
+                              color: AppColors.primary,
+                              width: 1.6,
+                            ),
+                          ),
                         ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: BorderSide(color: AppColors.line),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: BorderSide(color: AppColors.line),
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(24),
-                          borderSide: const BorderSide(
-                            color: AppColors.primary,
-                            width: 1.5,
+                        onSubmitted: (_) => _send(),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Material(
+                      color: AppColors.primary,
+                      shape: const CircleBorder(),
+                      child: InkWell(
+                        customBorder: const CircleBorder(),
+                        onTap: _send,
+                        child: const Padding(
+                          padding: EdgeInsets.all(10),
+                          child: Icon(
+                            Icons.arrow_upward_rounded,
+                            size: 20,
+                            color: Colors.white,
+                            semanticLabel: '전송',
                           ),
                         ),
                       ),
-                      onSubmitted: (_) => _send(),
                     ),
-                  ),
-                  const SizedBox(width: 4),
-                  IconButton(
-                    onPressed: _send,
-                    tooltip: '전송',
-                    icon: const Icon(Icons.send_rounded),
-                    color: AppColors.primary,
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -1114,7 +1177,7 @@ class _ChatBanner extends StatelessWidget {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      color: AppColors.primary.withValues(alpha: 0.06),
+      color: AppColors.primaryMuted,
       child: Row(
         children: [
           Icon(icon, size: 16, color: AppColors.primary),

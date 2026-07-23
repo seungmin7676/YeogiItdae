@@ -12,7 +12,9 @@ void main() {
   group('UserAvatar', () {
     testWidgets('photoUrl이 없으면 기본 사람 아이콘을 표시한다', (WidgetTester tester) async {
       await tester.pumpWidget(
-        const MaterialApp(home: Material(child: UserAvatar(nickname: '테스트봇'))),
+        const MaterialApp(
+          home: Material(child: UserAvatar(nickname: '테스트봇')),
+        ),
       );
 
       expect(find.byIcon(Icons.person_rounded), findsOneWidget);

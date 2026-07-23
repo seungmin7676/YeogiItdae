@@ -8,9 +8,9 @@ import '../theme/app_theme.dart';
 Future<ImageSource?> showImageSourceSheet(BuildContext context) {
   return showModalBottomSheet<ImageSource>(
     context: context,
-    backgroundColor: Colors.white,
+    backgroundColor: AppColors.surface,
     shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      borderRadius: BorderRadius.vertical(top: Radius.circular(kRadiusXl)),
     ),
     builder: (context) => SafeArea(
       child: Column(

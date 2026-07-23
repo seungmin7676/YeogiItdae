@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
@@ -24,17 +25,15 @@ class UserAvatar extends StatelessWidget {
         width: size,
         height: size,
         alignment: Alignment.center,
-        color: AppColors.primary.withValues(alpha: 0.1),
+        color: AppColors.primaryMuted,
         child: url != null && url.isNotEmpty
-            ? Image.network(
-                url,
+            ? CachedNetworkImage(
+                imageUrl: url,
                 width: size,
                 height: size,
                 fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) =>
-                    _defaultIcon(size),
-                loadingBuilder: (context, child, progress) =>
-                    progress == null ? child : _defaultIcon(size),
+                errorWidget: (context, url, error) => _defaultIcon(size),
+                placeholder: (context, url) => _defaultIcon(size),
               )
             : _defaultIcon(size),
       ),

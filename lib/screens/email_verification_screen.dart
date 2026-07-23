@@ -176,8 +176,8 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
                   height: 64,
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: AppColors.primary.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(16),
+                    color: AppColors.primaryMuted,
+                    borderRadius: BorderRadius.circular(kRadiusLg),
                   ),
                   child: const Icon(
                     Icons.mark_email_unread_outlined,
@@ -215,17 +215,17 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
                     hintText: '------',
                     errorText: _errorText,
                     filled: true,
-                    fillColor: AppColors.surface,
+                    fillColor: AppColors.surfaceAlt,
                     border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(14),
-                      borderSide: BorderSide(color: AppColors.line),
+                      borderRadius: BorderRadius.circular(kRadiusMd),
+                      borderSide: BorderSide.none,
                     ),
                     enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(14),
-                      borderSide: BorderSide(color: AppColors.line),
+                      borderRadius: BorderRadius.circular(kRadiusMd),
+                      borderSide: BorderSide.none,
                     ),
                     focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(14),
+                      borderRadius: BorderRadius.circular(kRadiusMd),
                       borderSide: const BorderSide(
                         color: AppColors.primary,
                         width: 1.6,

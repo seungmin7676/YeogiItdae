@@ -3,7 +3,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../models/lost_found_item.dart';
+import '../services/error_messages.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_ui.dart';
 
 /// 화면: 알림 구독 관리. 저장해둔 키워드가 제목/설명에 포함되거나, 구독한
 /// 카테고리의 새 글이 등록되면 알림을 받는다.
@@ -15,7 +17,9 @@ class SavedSearchesScreen extends StatelessWidget {
     final keyword = await showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(kRadiusMd),
+        ),
         title: const Text('키워드 추가'),
         content: TextField(
           controller: controller,
@@ -45,9 +49,9 @@ class SavedSearchesScreen extends StatelessWidget {
       );
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('키워드 추가에 실패했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('키워드 추가에 실패했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
     }
   }
@@ -66,9 +70,9 @@ class SavedSearchesScreen extends StatelessWidget {
           });
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('키워드 삭제에 실패했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('키워드 삭제에 실패했습니다: ${friendlyErrorMessage(e)}')),
+        );
       }
     }
   }
@@ -90,9 +94,11 @@ class SavedSearchesScreen extends StatelessWidget {
       );
     } catch (e) {
       if (context.mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('카테고리 구독 변경에 실패했습니다: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('카테고리 구독 변경에 실패했습니다: ${friendlyErrorMessage(e)}'),
+          ),
+        );
       }
     }
   }
@@ -102,17 +108,17 @@ class SavedSearchesScreen extends StatelessWidget {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     return Scaffold(
       backgroundColor: AppColors.bg,
-      appBar: AppBar(
-        title: const Text('알림 구독'),
-        backgroundColor: AppColors.bg,
-        elevation: 0,
-      ),
+      appBar: AppBar(title: const Text('알림 구독')),
       floatingActionButton: uid == null
           ? null
-          : FloatingActionButton(
+          : FloatingActionButton.extended(
               onPressed: () => _addKeyword(context, uid),
               tooltip: '키워드 추가',
-              child: const Icon(Icons.add_rounded),
+              icon: const Icon(Icons.add_rounded, size: 20),
+              label: const Text(
+                '키워드 추가',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
             ),
       body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
         stream: FirebaseFirestore.instance
@@ -134,12 +140,14 @@ class SavedSearchesScreen extends StatelessWidget {
           );
 
           return ListView(
-            padding: const EdgeInsets.fromLTRB(20, 16, 20, 100),
+            padding: const EdgeInsets.fromLTRB(
+              kPagePadding,
+              20,
+              kPagePadding,
+              100,
+            ),
             children: [
-              const Text(
-                '카테고리 구독',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
-              ),
+              const SectionLabel('카테고리 구독'),
               const SizedBox(height: 4),
               const Text(
                 '구독한 카테고리에 새 글이 등록되면 알려드려요.',
@@ -151,39 +159,22 @@ class SavedSearchesScreen extends StatelessWidget {
                 runSpacing: 8,
                 children: kItemCategories.map((category) {
                   final subscribed = subscribedCategories.contains(category);
-                  return FilterChip(
-                    label: Text(category),
+                  return SelectChip(
+                    label: subscribed ? '$category ✓' : category,
                     selected: subscribed,
-                    onSelected: uid == null
-                        ? null
-                        : (_) => _toggleCategory(
+                    onTap: uid == null
+                        ? () {}
+                        : () => _toggleCategory(
                             context,
                             uid,
                             category,
                             subscribed,
                           ),
-                    selectedColor: AppColors.primary.withValues(alpha: 0.15),
-                    checkmarkColor: AppColors.primary,
-                    labelStyle: TextStyle(
-                      color: subscribed
-                          ? AppColors.primary
-                          : AppColors.inkMuted,
-                      fontWeight: subscribed
-                          ? FontWeight.w700
-                          : FontWeight.w500,
-                    ),
-                    backgroundColor: AppColors.surface,
-                    side: BorderSide(
-                      color: subscribed ? AppColors.primary : AppColors.line,
-                    ),
                   );
                 }).toList(),
               ),
-              const SizedBox(height: 28),
-              const Text(
-                '키워드 알림',
-                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700),
-              ),
+              const SizedBox(height: 32),
+              const SectionLabel('키워드 알림'),
               const SizedBox(height: 4),
               const Text(
                 '저장한 키워드가 제목이나 설명에 포함된 새 글이 등록되면 알려드려요.',
@@ -194,46 +185,41 @@ class SavedSearchesScreen extends StatelessWidget {
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 12),
                   child: Text(
-                    '저장한 키워드가 없어요. 오른쪽 아래 + 버튼으로 추가해보세요.',
-                    style: TextStyle(color: AppColors.inkMuted),
+                    '저장한 키워드가 없어요.\n아래 키워드 추가 버튼으로 시작해보세요.',
+                    style: TextStyle(color: AppColors.inkMuted, height: 1.5),
                   ),
                 )
               else
-                for (final keyword in keywords)
-                  Card(
-                    margin: const EdgeInsets.only(bottom: 12),
-                    elevation: 0,
-                    color: AppColors.surface,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                      side: const BorderSide(color: AppColors.line),
-                    ),
-                    child: ListTile(
-                      contentPadding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 4,
-                      ),
-                      leading: const Icon(
-                        Icons.search_rounded,
-                        color: AppColors.primary,
-                      ),
-                      title: Text(
-                        keyword,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
-                      trailing: IconButton(
-                        icon: const Icon(
-                          Icons.close_rounded,
-                          size: 18,
+                GroupSurface(
+                  children: [
+                    for (final keyword in keywords)
+                      ListTile(
+                        contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 2,
+                        ),
+                        leading: const Icon(
+                          Icons.search_rounded,
                           color: AppColors.inkMuted,
                         ),
-                        tooltip: '삭제',
-                        onPressed: uid == null
-                            ? null
-                            : () => _removeKeyword(context, uid, keyword),
+                        title: Text(
+                          keyword,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        trailing: IconButton(
+                          icon: const Icon(
+                            Icons.close_rounded,
+                            size: 18,
+                            color: AppColors.inkMuted,
+                          ),
+                          tooltip: '삭제',
+                          onPressed: uid == null
+                              ? null
+                              : () => _removeKeyword(context, uid, keyword),
+                        ),
                       ),
-                    ),
-                  ),
+                  ],
+                ),
             ],
           );
         },

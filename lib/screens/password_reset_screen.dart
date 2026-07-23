@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
@@ -71,9 +72,23 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
     String path,
     Map<String, dynamic> body,
   ) async {
+    // 로그인 전이라 Firebase ID 토큰이 없는 화면이라, 학번 패턴을 순회하며
+    // 임의 주소로 재설정 메일을 대량 발송시키는 남용을 막을 다른 수단이
+    // 필요하다. App Check 토큰을 실어 보내면 서버가 "진짜 이 앱에서 온
+    // 요청인지"를 확인할 수 있다. 토큰 발급 실패(콘솔에서 아직 활성화
+    // 안 함 등)는 조용히 무시한다 — 서버도 검증 실패를 당장 차단하지
+    // 않도록 되어 있다.
+    String? appCheckToken;
+    try {
+      appCheckToken = (await FirebaseAppCheck.instance.getToken())?.toString();
+    } catch (_) {}
+
     final response = await http.post(
       Uri.parse('$kVerifyBackendUrl$path'),
-      headers: {'Content-Type': 'application/json'},
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Firebase-AppCheck': ?appCheckToken,
+      },
       body: jsonEncode(body),
     );
     final decoded = response.body.isEmpty
@@ -264,7 +279,7 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
       ),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.all(20),
+          padding: const EdgeInsets.all(24),
           child: body,
         ),
       ),
@@ -332,17 +347,17 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
             hintText: '------',
             errorText: _codeErrorText,
             filled: true,
-            fillColor: AppColors.surface,
+            fillColor: AppColors.surfaceAlt,
             border: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: BorderSide(color: AppColors.line),
+              borderRadius: BorderRadius.circular(kRadiusMd),
+              borderSide: BorderSide.none,
             ),
             enabledBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
-              borderSide: BorderSide(color: AppColors.line),
+              borderRadius: BorderRadius.circular(kRadiusMd),
+              borderSide: BorderSide.none,
             ),
             focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(kRadiusMd),
               borderSide: const BorderSide(
                 color: AppColors.primary,
                 width: 1.6,

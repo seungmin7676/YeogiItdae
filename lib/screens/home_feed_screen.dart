@@ -1,16 +1,18 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/recent_search_service.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_ui.dart';
+import '../widgets/app_user_data.dart';
 import '../widgets/feed_message.dart';
 import '../widgets/hallym_logo.dart';
 import '../widgets/item_card.dart';
 import '../widgets/searchable_picker_sheet.dart';
+import '../widgets/skeleton.dart';
 import 'item_detail_sheet.dart';
 import 'notifications_screen.dart';
 import 'register_item_screen.dart';
@@ -43,6 +45,11 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
   int _loadedPages = 1;
   bool _isLoadingMore = false;
 
+  // 카테고리 칩의 숫자는 전체 목록을 다시 구독해서 세지 않고 count() 집계
+  // 쿼리로 서버에서 직접 센다. 실시간은 아니지만(집계 쿼리는 스냅샷 구독을
+  // 지원하지 않는다), 필터가 바뀌거나 새로고침할 때 다시 계산한다.
+  Future<Map<String, int>> _categoryCountsFuture = Future.value(const {});
+
   @override
   void initState() {
     super.initState();
@@ -53,6 +60,29 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
       if (!_searchFocusNode.hasFocus) _saveCurrentSearch();
       if (mounted) setState(() {});
     });
+    _refreshCategoryCounts();
+  }
+
+  void _refreshCategoryCounts() {
+    setState(() {
+      _categoryCountsFuture = _loadCategoryCounts();
+    });
+  }
+
+  /// 차단한 작성자·신고 누적으로 숨김 처리된 글도 그대로 세는 근사치다.
+  /// 정확히 세려면 문서를 전부 읽어야 하는데, 배지 숫자 하나 때문에 매번
+  /// 전체 컬렉션을 읽는 비용이 더 크다고 판단해 정확도보다 비용을 우선했다.
+  Future<Map<String, int>> _loadCategoryCounts() async {
+    final counts = await Future.wait(
+      kItemCategories.map((category) async {
+        final snap = await _categoryCountQuery
+            .where('category', isEqualTo: category)
+            .count()
+            .get();
+        return MapEntry(category, snap.count ?? 0);
+      }),
+    );
+    return Map.fromEntries(counts);
   }
 
   @override
@@ -143,11 +173,12 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
       _sortByPopular ? 'viewCount' : 'createdAt',
       descending: true,
     );
-    // 검색 중에는 아직 페이지에 로드되지 않은 과거 게시글도 찾을 수 있어야
-    // 하므로, 검색어가 있을 때는 페이지네이션 limit을 적용하지 않는다.
-    if (_searchQuery.trim().isEmpty) {
-      query = query.limit(_pageSize * _loadedPages);
-    }
+    // 검색 중이라도 항상 페이지네이션 limit을 적용한다. 예전에는 검색어가
+    // 있으면 limit을 아예 없애 전체 컬렉션을 매번 구독했는데, 게시글이
+    // 늘어날수록 검색할 때마다 읽기 비용이 무한정 커지는 문제가 있었다.
+    // 대신 현재 페이지에서 못 찾으면 "더 보기"로 다음 페이지를 불러와
+    // 계속 찾을 수 있게 한다.
+    query = query.limit(_pageSize * _loadedPages);
     return query;
   }
 
@@ -180,402 +211,310 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
     }
   }
 
-  void _goToRegisterScreen() {
-    Navigator.push(
+  Future<void> _goToRegisterScreen() async {
+    await Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => const RegisterItemScreen()),
     );
+    // 새 글 등록으로 카테고리 분포가 바뀌었을 수 있으니 돌아오면 다시 센다.
+    if (mounted) _refreshCategoryCounts();
   }
 
   void _showDetail(LostFoundItem item) {
     incrementItemViewCount(item);
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-      ),
-      builder: (context) => ItemDetailSheet(item: item),
-    );
+    showItemDetailSheet(context, item);
+  }
+
+  void _loadNextPage() {
+    setState(() {
+      _isLoadingMore = true;
+      _loadedPages += 1;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final blockedUids = AppUserData.of(context).blockedUids;
     return Scaffold(
       appBar: AppBar(
-        titleSpacing: 20,
-        title: Row(
-          children: [
-            const HallymLogo(size: 26),
-            const SizedBox(width: 10),
-            const Text('여기있대!'),
-          ],
+        titleSpacing: kPagePadding,
+        title: const Row(
+          children: [HallymLogo(size: 24), SizedBox(width: 10), Text('여기있대!')],
         ),
-        actions: [
-          IconButton(
-            tooltip: '장소 필터',
-            onPressed: _pickLocation,
-            icon: Icon(
-              Icons.place_outlined,
-              color: _selectedLocation == _kAllLocations
-                  ? AppColors.inkMuted
-                  : AppColors.primary,
-            ),
-          ),
-          PopupMenuButton<bool>(
-            tooltip: '정렬',
-            initialValue: _sortByPopular,
-            onSelected: (value) => setState(() {
-              _sortByPopular = value;
-              _loadedPages = 1;
-            }),
-            icon: Icon(
-              _sortByPopular ? Icons.trending_up_rounded : Icons.sort_rounded,
-              color: AppColors.inkMuted,
-            ),
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: false, child: Text('최신순')),
-              PopupMenuItem(value: true, child: Text('조회순')),
-            ],
-          ),
-          const NotificationBellButton(),
-          const SizedBox(width: 12),
-        ],
+        actions: const [NotificationBellButton(), SizedBox(width: 10)],
       ),
-      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
-            .collection('blocks')
-            .doc(FirebaseAuth.instance.currentUser?.uid ?? '_')
-            .snapshots(),
-        builder: (context, blocksSnapshot) {
-          final blockedUids = Set<String>.from(
-            (blocksSnapshot.data?.data()?['blockedUsers'] as Map?)?.keys ??
-                const [],
-          );
-          return Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
-                child: TextField(
-                  controller: _searchController,
-                  focusNode: _searchFocusNode,
-                  onChanged: _onSearchChanged,
-                  onSubmitted: (_) => _saveCurrentSearch(),
-                  decoration: InputDecoration(
-                    hintText: '제목이나 설명으로 검색',
-                    hintStyle: const TextStyle(color: Color(0xFFB4B7C4)),
-                    prefixIcon: const Icon(
-                      Icons.search_rounded,
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              kPagePadding,
+              12,
+              kPagePadding,
+              10,
+            ),
+            child: TextField(
+              controller: _searchController,
+              focusNode: _searchFocusNode,
+              onChanged: _onSearchChanged,
+              onSubmitted: (_) => _saveCurrentSearch(),
+              decoration: appSearchDecoration(
+                '어떤 물건을 찾고 계세요?',
+                suffixIcon: _searchController.text.isEmpty
+                    ? null
+                    : IconButton(
+                        icon: const Icon(
+                          Icons.close_rounded,
+                          color: AppColors.inkMuted,
+                          size: 18,
+                        ),
+                        tooltip: '검색어 지우기',
+                        onPressed: () {
+                          _searchDebounce?.cancel();
+                          _searchController.clear();
+                          setState(() => _searchQuery = '');
+                        },
+                      ),
+              ),
+            ),
+          ),
+          if (_searchFocusNode.hasFocus &&
+              _searchController.text.isEmpty &&
+              _recentSearches.isNotEmpty)
+            SizedBox(
+              height: 38,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.fromLTRB(
+                  kPagePadding,
+                  0,
+                  kPagePadding,
+                  6,
+                ),
+                itemCount: _recentSearches.length,
+                separatorBuilder: (context, index) => const SizedBox(width: 6),
+                itemBuilder: (context, index) {
+                  final query = _recentSearches[index];
+                  return InputChip(
+                    label: Text(query),
+                    labelStyle: const TextStyle(
+                      fontSize: 12.5,
                       color: AppColors.inkMuted,
                     ),
-                    suffixIcon: _searchController.text.isEmpty
-                        ? null
-                        : IconButton(
-                            icon: const Icon(
-                              Icons.close_rounded,
-                              color: AppColors.inkMuted,
-                            ),
-                            tooltip: '검색어 지우기',
-                            onPressed: () {
-                              _searchDebounce?.cancel();
-                              _searchController.clear();
-                              setState(() => _searchQuery = '');
-                            },
-                          ),
-                    filled: true,
-                    fillColor: AppColors.surface,
-                    contentPadding: const EdgeInsets.symmetric(vertical: 0),
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(30),
-                      borderSide: const BorderSide(color: AppColors.line),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(30),
-                      borderSide: const BorderSide(color: AppColors.line),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(30),
-                      borderSide: const BorderSide(
-                        color: AppColors.primary,
-                        width: 1.5,
-                      ),
-                    ),
-                  ),
-                ),
+                    backgroundColor: AppColors.surface,
+                    side: const BorderSide(color: AppColors.lineStrong),
+                    shape: const StadiumBorder(),
+                    deleteIconColor: AppColors.inkFaint,
+                    onPressed: () => _applyRecentSearch(query),
+                    onDeleted: () => _removeRecentSearch(query),
+                  );
+                },
               ),
-              if (_searchFocusNode.hasFocus &&
-                  _searchController.text.isEmpty &&
-                  _recentSearches.isNotEmpty)
-                SizedBox(
-                  height: 40,
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-                    itemCount: _recentSearches.length,
-                    separatorBuilder: (context, index) =>
-                        const SizedBox(width: 6),
-                    itemBuilder: (context, index) {
-                      final query = _recentSearches[index];
-                      return InputChip(
-                        label: Text(query),
-                        labelStyle: const TextStyle(
-                          fontSize: 12.5,
-                          color: AppColors.inkMuted,
-                        ),
-                        backgroundColor: AppColors.surface,
-                        side: const BorderSide(color: AppColors.line),
-                        onPressed: () => _applyRecentSearch(query),
-                        onDeleted: () => _removeRecentSearch(query),
-                      );
-                    },
-                  ),
-                ),
-              if (_selectedLocation != _kAllLocations)
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: InputChip(
-                      label: Text(_selectedLocation),
-                      avatar: const Icon(
-                        Icons.place_outlined,
-                        size: 16,
-                        color: AppColors.primary,
-                      ),
-                      labelStyle: const TextStyle(
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.w700,
-                        fontSize: 12.5,
-                      ),
-                      backgroundColor: AppColors.primary.withValues(
-                        alpha: 0.08,
-                      ),
-                      side: const BorderSide(color: Colors.transparent),
-                      onDeleted: () => setState(() {
+            ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(
+              kPagePadding,
+              2,
+              kPagePadding,
+              10,
+            ),
+            child: AppSegmented(
+              labels: const ['전체', '습득물', '분실물'],
+              selectedIndex: _selectedFilter,
+              onChanged: (index) {
+                setState(() {
+                  _selectedFilter = index;
+                  _loadedPages = 1;
+                });
+                _refreshCategoryCounts();
+              },
+            ),
+          ),
+          FutureBuilder<Map<String, int>>(
+            future: _categoryCountsFuture,
+            builder: (context, countSnapshot) {
+              return _buildFilterRow(countSnapshot.data ?? const {});
+            },
+          ),
+          const SizedBox(height: 10),
+          const Divider(),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _filteredQuery.snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return FeedMessage(
+                    icon: Icons.error_outline_rounded,
+                    title: '목록을 불러오지 못했어요',
+                    text: '네트워크 상태를 확인한 뒤 다시 시도해주세요.',
+                    actionLabel: '다시 시도',
+                    onAction: () => setState(() {}),
+                  );
+                }
+                if (!snapshot.hasData) {
+                  return const ItemListSkeleton();
+                }
+
+                if (_isLoadingMore) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) setState(() => _isLoadingMore = false);
+                  });
+                }
+
+                final docs = snapshot.data!.docs;
+                final visibleItems = LostFoundItem.fromDocs(
+                  docs,
+                ).where((item) => !item.isHidden).toList();
+                final items = _applySearch(visibleItems, blockedUids);
+                // 받은 문서 수가 요청한 개수(limit)와 같으면 더 남아있을 가능성이 있다고 본다.
+                // 검색 중에도 마찬가지다 — 현재 페이지에는 없어도 더 오래된 페이지에
+                // 일치하는 글이 있을 수 있으므로 "더 보기"로 계속 찾을 수 있게 한다.
+                final canLoadMore = docs.length == _pageSize * _loadedPages;
+
+                if (items.isEmpty && canLoadMore) {
+                  return FeedMessage(
+                    icon: Icons.search_off_rounded,
+                    title: '아직 찾지 못했어요',
+                    text: '지금까지 불러온 글에는 일치하는 결과가 없어요.\n더 불러와서 계속 찾아볼 수 있어요.',
+                    actionLabel: _isLoadingMore ? '불러오는 중…' : '더 불러오기',
+                    onAction: _isLoadingMore ? () {} : _loadNextPage,
+                  );
+                }
+
+                if (items.isEmpty) {
+                  final isSearching = _searchQuery.trim().isNotEmpty;
+                  final hasFilter =
+                      _selectedCategory != '전체' ||
+                      _selectedLocation != _kAllLocations ||
+                      _selectedFilter != 0;
+                  if (isSearching) {
+                    return const FeedMessage(
+                      icon: Icons.search_off_rounded,
+                      title: '검색 결과가 없어요',
+                      text: '다른 검색어로 다시 찾아보세요.',
+                    );
+                  }
+                  if (hasFilter) {
+                    return FeedMessage(
+                      icon: Icons.filter_alt_off_outlined,
+                      title: '조건에 맞는 글이 없어요',
+                      text: '필터를 바꾸거나 해제하면 더 많은 글을 볼 수 있어요.',
+                      actionLabel: '필터 모두 해제',
+                      onAction: () => setState(() {
+                        _selectedFilter = 0;
+                        _selectedCategory = '전체';
                         _selectedLocation = _kAllLocations;
                         _loadedPages = 1;
                       }),
-                    ),
-                  ),
-                ),
-              _buildFilterChips(),
-              StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                stream: _categoryCountQuery.snapshots(),
-                builder: (context, countSnapshot) {
-                  final categoryCounts = <String, int>{};
-                  for (final doc in countSnapshot.data?.docs ?? const []) {
-                    final item = LostFoundItem.fromDoc(doc);
-                    if (item.isHidden || blockedUids.contains(item.authorUid)) {
-                      continue;
-                    }
-                    categoryCounts[item.category] =
-                        (categoryCounts[item.category] ?? 0) + 1;
+                    );
                   }
-                  return _buildCategoryChips(categoryCounts);
-                },
-              ),
-              const SizedBox(height: 4),
-              Expanded(
-                child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: _filteredQuery.snapshots(),
-                  builder: (context, snapshot) {
-                    if (snapshot.hasError) {
-                      return FeedMessage(
-                        icon: Icons.error_outline_rounded,
-                        text: '데이터를 불러오지 못했습니다.',
-                      );
-                    }
-                    if (!snapshot.hasData) {
-                      return const Center(
-                        child: CircularProgressIndicator(
-                          color: AppColors.primary,
-                        ),
-                      );
-                    }
+                  return FeedMessage(
+                    icon: Icons.inbox_outlined,
+                    title: '아직 등록된 글이 없어요',
+                    text: '잃어버렸거나 주운 물건이 있다면\n첫 게시글을 등록해보세요.',
+                    actionLabel: '글 등록하기',
+                    onAction: _goToRegisterScreen,
+                  );
+                }
 
-                    if (_isLoadingMore) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) setState(() => _isLoadingMore = false);
-                      });
-                    }
-
-                    final docs = snapshot.data!.docs;
-                    final visibleItems = docs
-                        .map(LostFoundItem.fromDoc)
-                        .where((item) => !item.isHidden)
-                        .toList();
-                    final items = _applySearch(visibleItems, blockedUids);
-                    // 검색 중에는 limit 없이 전체를 이미 불러온 상태이므로 더보기가 필요 없다.
-                    // 그 외에는 받은 문서 수가 요청한 개수(limit)와 같으면 더 남아있을 가능성이 있다고 본다.
-                    final canLoadMore =
-                        _searchQuery.trim().isEmpty &&
-                        docs.length == _pageSize * _loadedPages;
-
-                    return items.isEmpty
-                        ? FeedMessage(
-                            icon: _searchQuery.isEmpty
-                                ? Icons.inbox_outlined
-                                : Icons.search_off_rounded,
-                            text: _searchQuery.isEmpty
-                                ? '아직 등록된 게시글이 없어요.\n첫 게시글을 등록해보세요!'
-                                : '검색 결과가 없습니다.',
-                          )
-                        : RefreshIndicator(
-                            color: AppColors.primary,
-                            onRefresh: () => _filteredQuery.get(
-                              const GetOptions(source: Source.server),
-                            ),
-                            child: ListView.builder(
-                              padding: const EdgeInsets.fromLTRB(
-                                20,
-                                8,
-                                20,
-                                100,
-                              ),
-                              itemCount: items.length + (canLoadMore ? 1 : 0),
-                              itemBuilder: (context, index) {
-                                if (index == items.length) {
-                                  return Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                      vertical: 16,
-                                    ),
-                                    child: Center(
-                                      child: OutlinedButton(
-                                        onPressed: _isLoadingMore
-                                            ? null
-                                            : () => setState(() {
-                                                _isLoadingMore = true;
-                                                _loadedPages += 1;
-                                              }),
-                                        child: _isLoadingMore
-                                            ? const SizedBox(
-                                                width: 16,
-                                                height: 16,
-                                                child:
-                                                    CircularProgressIndicator(
-                                                      strokeWidth: 2,
-                                                    ),
-                                              )
-                                            : const Text('더 보기'),
-                                      ),
-                                    ),
-                                  );
-                                }
-                                final item = items[index];
-                                return ItemCard(
-                                  item: item,
-                                  onTap: () => _showDetail(item),
-                                );
-                              },
-                            ),
-                          );
+                return RefreshIndicator(
+                  color: AppColors.primary,
+                  onRefresh: () async {
+                    _refreshCategoryCounts();
+                    await _filteredQuery.get(
+                      const GetOptions(source: Source.server),
+                    );
                   },
-                ),
-              ),
-            ],
-          );
-        },
+                  child: ListView.separated(
+                    padding: const EdgeInsets.only(bottom: 100),
+                    itemCount: items.length + (canLoadMore ? 1 : 0),
+                    separatorBuilder: (context, index) => const Divider(),
+                    itemBuilder: (context, index) {
+                      if (index == items.length) {
+                        return LoadMoreButton(
+                          isLoading: _isLoadingMore,
+                          onPressed: _loadNextPage,
+                        );
+                      }
+                      final item = items[index];
+                      return ItemCard(
+                        item: item,
+                        onTap: () => _showDetail(item),
+                      );
+                    },
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _goToRegisterScreen,
-        icon: const Icon(Icons.edit_outlined),
+        icon: const Icon(Icons.edit_rounded, size: 18),
         label: const Text(
-          '등록하기',
-          style: TextStyle(fontWeight: FontWeight.w700),
+          '글쓰기',
+          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
         ),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
     );
   }
 
-  Widget _buildFilterChips() {
-    const labels = ['전체', '습득물', '분실물'];
-    return SizedBox(
-      height: 52,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-        itemCount: labels.length,
-        separatorBuilder: (context, index) => const SizedBox(width: 8),
-        itemBuilder: (context, index) {
-          final selected = _selectedFilter == index;
-          return GestureDetector(
-            onTap: () => setState(() {
-              _selectedFilter = index;
-              _loadedPages = 1;
-            }),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(horizontal: 18),
-              decoration: BoxDecoration(
-                color: selected ? AppColors.primary : AppColors.surface,
-                borderRadius: BorderRadius.circular(30),
-                border: Border.all(
-                  color: selected ? AppColors.primary : AppColors.line,
-                ),
-              ),
-              child: Text(
-                labels[index],
-                style: TextStyle(
-                  color: selected ? Colors.white : AppColors.inkMuted,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13.5,
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  Widget _buildCategoryChips(Map<String, int> categoryCounts) {
+  /// 장소·정렬 트리거 칩과 카테고리 칩을 한 줄에 모은 필터 행.
+  /// 흩어져 있던 필터 도구(앱바 아이콘·별도 칩 줄)를 한 자리로 모았다.
+  Widget _buildFilterRow(Map<String, int> categoryCounts) {
     final labels = ['전체', ...kItemCategories];
     final totalCount = categoryCounts.values.fold(0, (a, b) => a + b);
+    final locationActive = _selectedLocation != _kAllLocations;
     return SizedBox(
-      height: 44,
-      child: ListView.separated(
+      height: 36,
+      child: ListView(
         scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-        itemCount: labels.length,
-        separatorBuilder: (context, index) => const SizedBox(width: 6),
-        itemBuilder: (context, index) {
-          final label = labels[index];
-          final selected = _selectedCategory == label;
-          final count = label == '전체'
-              ? totalCount
-              : (categoryCounts[label] ?? 0);
-          return GestureDetector(
-            onTap: () => setState(() {
-              _selectedCategory = label;
+        padding: const EdgeInsets.symmetric(horizontal: kPagePadding),
+        children: [
+          TriggerChip(
+            label: locationActive ? _selectedLocation : '장소',
+            icon: Icons.place_outlined,
+            active: locationActive,
+            onTap: _pickLocation,
+            onClear: () => setState(() {
+              _selectedLocation = _kAllLocations;
               _loadedPages = 1;
             }),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              decoration: BoxDecoration(
-                color: selected
-                    ? AppColors.primary.withValues(alpha: 0.1)
-                    : AppColors.surface,
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                  color: selected ? AppColors.primary : AppColors.line,
-                ),
-              ),
-              child: Text(
-                count > 0 ? '$label ($count)' : label,
-                style: TextStyle(
-                  color: selected ? AppColors.primary : AppColors.inkMuted,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 12.5,
-                ),
-              ),
+          ),
+          const SizedBox(width: 6),
+          TriggerChip(
+            label: _sortByPopular ? '조회순' : '최신순',
+            icon: Icons.swap_vert_rounded,
+            active: _sortByPopular,
+            onTap: () => setState(() {
+              _sortByPopular = !_sortByPopular;
+              _loadedPages = 1;
+            }),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Container(width: 1, color: AppColors.lineStrong),
+          ),
+          for (var i = 0; i < labels.length; i++) ...[
+            if (i > 0) const SizedBox(width: 6),
+            Builder(
+              builder: (context) {
+                final label = labels[i];
+                final count = label == '전체'
+                    ? totalCount
+                    : (categoryCounts[label] ?? 0);
+                return SelectChip(
+                  label: count > 0 ? '$label $count' : label,
+                  selected: _selectedCategory == label,
+                  onTap: () => setState(() {
+                    _selectedCategory = label;
+                    _loadedPages = 1;
+                  }),
+                );
+              },
             ),
-          );
-        },
+          ],
+        ],
       ),
     );
   }

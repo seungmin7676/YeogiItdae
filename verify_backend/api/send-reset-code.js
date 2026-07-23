@@ -1,5 +1,5 @@
 const nodemailer = require('nodemailer');
-const { initAdmin, setCors, ALLOWED_EMAIL_DOMAIN } = require('../_lib');
+const { initAdmin, setCors, ALLOWED_EMAIL_DOMAIN, enforceAppCheckIfConfigured } = require('../_lib');
 
 const RESEND_COOLDOWN_MS = 60 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
@@ -14,6 +14,12 @@ module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method-not-allowed' });
 
   const admin = initAdmin();
+
+  // 로그인 전 화면이라 요청자를 특정할 수 없으니, 학번 패턴을 순회하며
+  // 임의 주소로 메일을 대량 발송시키는 남용을 막기 위해 최소한 "진짜 앱에서
+  // 온 요청인지"는 확인한다.
+  if (!(await enforceAppCheckIfConfigured(req, res, 'send-reset-code'))) return;
+
   const email = (req.body?.email ?? '').toString().trim().toLowerCase();
   if (!email || !email.endsWith(ALLOWED_EMAIL_DOMAIN)) {
     return res.status(403).json({ error: 'domain-not-allowed' });

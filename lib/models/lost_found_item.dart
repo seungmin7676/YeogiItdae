@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 
 /// 글 종류
 enum ItemType {
@@ -145,6 +146,24 @@ class LostFoundItem {
       reportCount: (data['reportCount'] as num?)?.toInt() ?? 0,
       viewCount: (data['viewCount'] as num?)?.toInt() ?? 0,
     );
+  }
+
+  /// 목록 스냅샷의 문서들을 모델로 변환하되, 문서 하나가 손상돼 있어도
+  /// (예: 필드 타입이 예상과 다른 legacy/비정상 데이터) 그 한 건 때문에
+  /// 전체 목록 화면이 통째로 깨지지 않도록 문서 단위로 격리한다.
+  /// 변환에 실패한 문서는 어떤 문서가 왜 실패했는지 로그만 남기고 건너뛴다.
+  static List<LostFoundItem> fromDocs(
+    Iterable<DocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    final items = <LostFoundItem>[];
+    for (final doc in docs) {
+      try {
+        items.add(LostFoundItem.fromDoc(doc));
+      } catch (e) {
+        debugPrint('items/${doc.id} 문서 변환 실패, 목록에서 제외: $e');
+      }
+    }
+    return items;
   }
 
   Map<String, dynamic> toMap() {
