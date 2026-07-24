@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../models/lost_found_item.dart';
+import '../services/item_queries.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/feed_message.dart';
@@ -25,13 +26,12 @@ class AuthorPostsScreen extends StatefulWidget {
 }
 
 class _AuthorPostsScreenState extends State<AuthorPostsScreen> {
-  static const int _pageSize = 20;
-  int _loadedPages = 1;
+  int _limit = kInitialPageLimit;
 
   Query<Map<String, dynamic>> get _query => itemsCollection
       .where('authorUid', isEqualTo: widget.authorUid)
       .orderBy('createdAt', descending: true)
-      .limit(_pageSize * _loadedPages);
+      .limit(_limit);
 
   @override
   Widget build(BuildContext context) {
@@ -58,7 +58,7 @@ class _AuthorPostsScreenState extends State<AuthorPostsScreen> {
           final items = LostFoundItem.fromDocs(
             docs,
           ).where((item) => !item.isHidden).toList();
-          final canLoadMore = docs.length == _pageSize * _loadedPages;
+          final canLoadMore = docs.length == _limit;
           if (items.isEmpty) {
             return const FeedMessage(
               icon: Icons.inbox_outlined,
@@ -74,7 +74,7 @@ class _AuthorPostsScreenState extends State<AuthorPostsScreen> {
               if (index == items.length) {
                 return LoadMoreButton(
                   isLoading: false,
-                  onPressed: () => setState(() => _loadedPages += 1),
+                  onPressed: () => setState(() => _limit += kLoadMoreStep),
                 );
               }
               final item = items[index];
