@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/bulk_item_actions.dart';
+import '../services/item_queries.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/confirm_dialog.dart';
@@ -22,8 +23,10 @@ class MyPostsScreen extends StatefulWidget {
 }
 
 class _MyPostsScreenState extends State<MyPostsScreen> {
-  static const int _pageSize = 20;
-  int _loadedPages = 1;
+  int _limit = kInitialPageLimit;
+
+  /// 필터·정렬이 바뀌면 이전 기준으로 늘려둔 개수를 처음으로 되돌린다.
+  void _resetPaging() => _limit = kInitialPageLimit;
 
   // 상태 필터: 0 = 전체, 1 = 진행중, 2 = 거래완료
   int _statusFilter = 0;
@@ -39,21 +42,13 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
   bool _isBulkWorking = false;
   final BulkItemActions _bulkActions = BulkItemActions(itemsCollection);
 
-  Query<Map<String, dynamic>> _query(String? uid) => itemsCollection
-      .where('authorUid', isEqualTo: uid)
-      .orderBy('createdAt', descending: !_sortOldestFirst)
-      .limit(_pageSize * _loadedPages);
-
-  List<LostFoundItem> _applyStatusFilter(List<LostFoundItem> items) {
-    switch (_statusFilter) {
-      case 1:
-        return items.where((item) => !item.resolved).toList();
-      case 2:
-        return items.where((item) => item.resolved).toList();
-      default:
-        return items;
-    }
-  }
+  Query<Map<String, dynamic>> _query(String? uid) => buildMyPostsQuery(
+    collection: itemsCollection,
+    uid: uid,
+    statusFilter: _statusFilter,
+    oldestFirst: _sortOldestFirst,
+    limit: _limit,
+  );
 
   void _endSelectionMode() {
     setState(() {
@@ -178,7 +173,7 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
                   initialValue: _sortOldestFirst,
                   onSelected: (value) => setState(() {
                     _sortOldestFirst = value;
-                    _loadedPages = 1;
+                    _resetPaging();
                   }),
                   icon: const Icon(
                     Icons.sort_rounded,
@@ -204,7 +199,10 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
             child: AppSegmented(
               labels: const ['전체', '진행중', '거래완료'],
               selectedIndex: _statusFilter,
-              onChanged: (index) => setState(() => _statusFilter = index),
+              onChanged: (index) => setState(() {
+                _statusFilter = index;
+                _resetPaging();
+              }),
             ),
           ),
           const Divider(),
@@ -226,10 +224,23 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
                 }
 
                 final docs = snapshot.data!.docs;
-                final allItems = LostFoundItem.fromDocs(docs);
-                final items = _applyStatusFilter(allItems);
-                final canLoadMore = docs.length == _pageSize * _loadedPages;
-                if (allItems.isEmpty) {
+                final items = LostFoundItem.fromDocs(docs);
+                final canLoadMore = docs.length == _limit;
+                if (items.isEmpty) {
+                  // 상태 필터가 걸려 있으면 "글이 하나도 없는 것"과 "이 상태인
+                  // 글만 없는 것"을 구분해서 안내한다.
+                  if (_statusFilter != 0) {
+                    return FeedMessage(
+                      icon: Icons.filter_alt_off_outlined,
+                      title: '조건에 맞는 글이 없어요',
+                      text: '상태 필터를 바꾸면 다른 글을 볼 수 있어요.',
+                      actionLabel: '전체 보기',
+                      onAction: () => setState(() {
+                        _statusFilter = 0;
+                        _resetPaging();
+                      }),
+                    );
+                  }
                   return FeedMessage(
                     icon: Icons.receipt_long_outlined,
                     title: '아직 등록한 글이 없어요',
@@ -241,15 +252,6 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
                         builder: (context) => const RegisterItemScreen(),
                       ),
                     ),
-                  );
-                }
-                if (items.isEmpty) {
-                  return FeedMessage(
-                    icon: Icons.filter_alt_off_outlined,
-                    title: '조건에 맞는 글이 없어요',
-                    text: '상태 필터를 바꾸면 다른 글을 볼 수 있어요.',
-                    actionLabel: '전체 보기',
-                    onAction: () => setState(() => _statusFilter = 0),
                   );
                 }
 
@@ -265,7 +267,8 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
                       if (index == items.length) {
                         return LoadMoreButton(
                           isLoading: false,
-                          onPressed: () => setState(() => _loadedPages += 1),
+                          onPressed: () =>
+                              setState(() => _limit += kLoadMoreStep),
                         );
                       }
                       final item = items[index];
