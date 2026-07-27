@@ -53,21 +53,23 @@ void main() {
   });
 
   group('LostFoundItem.isHidden', () {
-    LostFoundItem itemWithReportCount(int reportCount) => LostFoundItem(
-      title: '제목',
-      location: '장소',
-      type: ItemType.found,
-      authorUid: 'uid',
-      authorNickname: '닉네임',
-      reportCount: reportCount,
-    );
+    LostFoundItem item({int reportCount = 0, bool hidden = false}) =>
+        LostFoundItem(
+          title: '제목',
+          location: '장소',
+          type: ItemType.found,
+          authorUid: 'uid',
+          authorNickname: '닉네임',
+          reportCount: reportCount,
+          hidden: hidden,
+        );
 
-    test('신고 수가 임계값보다 낮으면 숨겨지지 않는다', () {
-      expect(itemWithReportCount(kReportThreshold - 1).isHidden, isFalse);
+    test('신고 수가 많아도 hidden이 아니면 숨겨지지 않는다', () {
+      expect(item(reportCount: 99).isHidden, isFalse);
     });
 
-    test('신고 수가 임계값에 도달하면 숨겨진다', () {
-      expect(itemWithReportCount(kReportThreshold).isHidden, isTrue);
+    test('관리자가 hidden으로 설정하면 숨겨진다', () {
+      expect(item(hidden: true).isHidden, isTrue);
     });
   });
 
@@ -197,6 +199,7 @@ void main() {
       expect(map['type'], 'found');
       expect(map['reportCount'], 0);
       expect(map['viewCount'], 0);
+      expect(map['hidden'], false);
       expect(map['imageUrls'], ['https://example.com/a.png']);
       expect(map.containsKey('createdAt'), isTrue);
     });

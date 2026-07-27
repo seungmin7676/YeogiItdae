@@ -38,6 +38,7 @@ class SavedSearchesScreen extends StatelessWidget {
         ],
       ),
     );
+    controller.dispose();
     if (keyword == null || keyword.isEmpty || !context.mounted) return;
 
     try {

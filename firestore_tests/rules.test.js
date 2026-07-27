@@ -56,6 +56,14 @@ function unverifiedUser(uid) {
   });
 }
 
+/** 관리자 계정(firestore.rules의 isAdmin 이메일과 일치). uid는 무관하다. */
+function adminUser() {
+  return testEnv.authenticatedContext('admin', {
+    email: '20225216@hallym.ac.kr',
+    email_verified: true,
+  });
+}
+
 const validItem = (authorUid, overrides = {}) => ({
   title: '검은색 백팩',
   description: '',
@@ -458,6 +466,81 @@ test('reportAppeals: 본인 이의제기는 읽을 수 있지만 남의 것은 �
 
   const stranger = hallymUser('bob').firestore();
   await assertFails(getDoc(doc(stranger, 'reportAppeals', itemId)));
+});
+
+test('items: 관리자는 어떤 글이든 hidden으로 숨길 수 있다', async () => {
+  const itemId = await seedItem('alice');
+  const db = adminUser().firestore();
+  await assertSucceeds(updateDoc(doc(db, 'items', itemId), { hidden: true }));
+});
+
+test('items: 일반 사용자는 hidden 필드를 조작할 수 없다', async () => {
+  const itemId = await seedItem('alice');
+  const db = hallymUser('bob').firestore();
+  await assertFails(updateDoc(doc(db, 'items', itemId), { hidden: true }));
+});
+
+test('items: 관리자는 신고 반려로 reportCount를 0으로 초기화할 수 있다', async () => {
+  const itemId = await seedItem('alice', { reportCount: 5 });
+  const db = adminUser().firestore();
+  await assertSucceeds(updateDoc(doc(db, 'items', itemId), { reportCount: 0 }));
+});
+
+test('items: 관리자는 신고 검토 결과로 남의 글도 삭제할 수 있다', async () => {
+  const itemId = await seedItem('alice');
+  const db = adminUser().firestore();
+  await assertSucceeds(deleteDoc(doc(db, 'items', itemId)));
+});
+
+test('reports: 관리자는 신고 문서를 읽고 삭제할 수 있다', async () => {
+  const itemId = await seedItem('alice');
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), 'reports', `${itemId}_bob`), {
+      itemId,
+      itemTitle: '검은색 백팩',
+      authorUid: 'alice',
+      reporterUid: 'bob',
+      reason: '스팸/광고',
+    });
+  });
+  const db = adminUser().firestore();
+  await assertSucceeds(getDoc(doc(db, 'reports', `${itemId}_bob`)));
+  await assertSucceeds(deleteDoc(doc(db, 'reports', `${itemId}_bob`)));
+});
+
+test('bugReports: 로그인 사용자는 본인 명의로 버그 신고를 생성할 수 있다', async () => {
+  const db = hallymUser('alice').firestore();
+  await assertSucceeds(
+    addDoc(collection(db, 'bugReports'), {
+      reporterUid: 'alice',
+      content: '앱이 느려요',
+    }),
+  );
+});
+
+test('bugReports: 다른 사람 명의로 버그 신고를 생성할 수 없다', async () => {
+  const db = hallymUser('alice').firestore();
+  await assertFails(
+    addDoc(collection(db, 'bugReports'), {
+      reporterUid: 'bob',
+      content: '위조',
+    }),
+  );
+});
+
+test('bugReports: 일반 사용자는 읽을 수 없고 관리자만 읽을 수 있다', async () => {
+  let id;
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const ref = await addDoc(collection(ctx.firestore(), 'bugReports'), {
+      reporterUid: 'alice',
+      content: '버그',
+    });
+    id = ref.id;
+  });
+  const user = hallymUser('alice').firestore();
+  await assertFails(getDoc(doc(user, 'bugReports', id)));
+  const admin = adminUser().firestore();
+  await assertSucceeds(getDoc(doc(admin, 'bugReports', id)));
 });
 
 /** 규칙을 우회해 items 문서를 심고 새 문서 id를 반환한다. */

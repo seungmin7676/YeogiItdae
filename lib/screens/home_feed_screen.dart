@@ -476,12 +476,12 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
             },
           ),
           const SizedBox(width: 6),
-          TriggerChip(
-            label: _sortByPopular ? '조회순' : '최신순',
-            icon: Icons.swap_vert_rounded,
-            active: _sortByPopular,
-            onTap: () => setState(() {
-              _sortByPopular = !_sortByPopular;
+          SegmentedToggle(
+            leftLabel: '최신순',
+            rightLabel: '조회순',
+            value: _sortByPopular,
+            onChanged: (popular) => setState(() {
+              _sortByPopular = popular;
               _resetPaging();
             }),
           ),

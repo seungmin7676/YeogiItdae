@@ -670,53 +670,29 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
       final reportRef = FirebaseFirestore.instance
           .collection('reports')
           .doc('${item.id}_$myUid');
-      final itemRef = itemsCollection.doc(item.id);
 
-      // 트랜잭션으로 처리해 "이번 신고가 자동 숨김 기준을 막 넘겼는지"를
-      // 정확히 판단하고, 그 경우에만 작성자에게 알림을 한 번 보낸다.
-      await FirebaseFirestore.instance.runTransaction((transaction) async {
-        final itemSnap = await transaction.get(itemRef);
-        final currentCount =
-            (itemSnap.data()?['reportCount'] as num?)?.toInt() ?? 0;
-
-        transaction.set(reportRef, {
-          'itemId': item.id,
-          'reporterUid': myUid,
-          'reason': selectedReason,
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-        transaction.update(itemRef, {'reportCount': FieldValue.increment(1)});
-
-        if (currentCount < kReportThreshold &&
-            currentCount + 1 >= kReportThreshold) {
-          transaction.set(
-            FirebaseFirestore.instance.collection('notifications').doc(),
-            {
-              'recipientUid': item.authorUid,
-              'senderUid': myUid,
-              'type': 'item_hidden',
-              'itemId': item.id,
-              'itemTitle': item.title,
-              'read': false,
-              'createdAt': FieldValue.serverTimestamp(),
-            },
-          );
-          // 이번 신고로 숨김 기준을 넘겼다면, 신고자에게도 처리 결과를 알려준다.
-          transaction.set(
-            FirebaseFirestore.instance.collection('notifications').doc(),
-            {
-              'recipientUid': myUid,
-              'senderUid': myUid,
-              'type': 'report_result',
-              'itemId': item.id,
-              'itemTitle': item.title,
-              'read': false,
-              'createdAt': FieldValue.serverTimestamp(),
-            },
-          );
-        }
+      // 신고는 더 이상 누적 횟수로 자동 숨김되지 않는다. reports 컬렉션이
+      // 관리자 검토 큐 역할을 하며, 관리자가 '신고 관리' 화면에서 사유를 보고
+      // 숨김/삭제/반려를 직접 결정한다. 글 제목·작성자 정보를 함께 저장해두면
+      // 관리자 화면이 items를 매번 다시 읽지 않아도 목록을 그릴 수 있다.
+      // reportCount는 관리자가 신고 누적 정도를 가늠하는 용도로만 유지한다.
+      final batch = FirebaseFirestore.instance.batch();
+      batch.set(reportRef, {
+        'itemId': item.id,
+        'itemTitle': item.title,
+        'authorUid': item.authorUid,
+        'authorNickname': item.authorNickname,
+        'reporterUid': myUid,
+        'reason': selectedReason,
+        'createdAt': FieldValue.serverTimestamp(),
       });
-      messenger.showSnackBar(const SnackBar(content: Text('신고가 접수되었습니다.')));
+      batch.update(itemsCollection.doc(item.id), {
+        'reportCount': FieldValue.increment(1),
+      });
+      await batch.commit();
+      messenger.showSnackBar(
+        const SnackBar(content: Text('신고가 접수되었습니다. 관리자가 검토할게요.')),
+      );
     } on FirebaseException catch (e) {
       final message = e.code == 'permission-denied'
           ? '이미 신고한 게시글입니다.'
@@ -1072,6 +1048,7 @@ class _ReportAppealSectionState extends State<_ReportAppealSection> {
         ],
       ),
     );
+    reasonController.dispose();
     if (reason == null || reason.isEmpty || !context.mounted) return;
 
     final myUid = FirebaseAuth.instance.currentUser?.uid;

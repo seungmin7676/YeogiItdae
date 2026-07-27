@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../models/lost_found_item.dart';
+import '../services/chat_actions.dart';
 import '../services/cloudinary_service.dart';
 import '../services/error_messages.dart';
 import '../services/image_save_service.dart';
@@ -41,6 +42,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
   bool _isSendingImage = false;
+  // 텍스트 전송 중복 방어. 연타·엔터 반복으로 같은 메시지가 두 번
+  // 저장되는 것을 막는다(입력창 선(先) 비움과 함께 이중 안전장치).
+  bool _isSendingText = false;
+  // 새 메시지가 실제로 늘었을 때만 맨 아래로 스크롤하기 위한 기준값.
+  // 상대의 "입력 중"·읽음 표시 갱신처럼 메시지 수와 무관한 리빌드에서는
+  // 스크롤을 건드리지 않아, 이전 대화를 올려 보던 사용자가 아래로 튕겨
+  // 내려가지 않게 한다.
+  int _lastMessageCount = -1;
+  late final ChatMessageSender _messageSender = ChatMessageSender(
+    FirebaseFirestore.instance,
+  );
   late final Future<Timestamp?> _myClearedAtFuture = _loadMyClearedAt();
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _messagesSub;
   Timer? _typingTimer;
@@ -173,39 +185,36 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _send() async {
+    if (_isSendingText) return;
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
+    // 커밋을 기다리는 동안 두 번째 탭/엔터가 같은 텍스트를 다시 읽어
+    // 중복 전송하지 못하도록, 재진입을 막고 입력창을 즉시 비운다.
+    _isSendingText = true;
+    _messageController.clear();
+    _typingTimer?.cancel();
+    _isTypingFlagSet = false;
+
     try {
-      final batch = FirebaseFirestore.instance.batch();
-      final chatRef = FirebaseFirestore.instance
-          .collection('chats')
-          .doc(widget.chatId);
-      batch.set(_messagesRef.doc(), {
-        'senderUid': user.uid,
-        'type': 'text',
-        'text': text,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-      batch.update(chatRef, {
-        'lastMessage': text,
-        'lastMessageAt': FieldValue.serverTimestamp(),
-        'lastReadAt.${user.uid}': FieldValue.serverTimestamp(),
-        'unreadCount.${widget.otherUid}': FieldValue.increment(1),
-        'typing.${user.uid}': false,
-      });
-      await batch.commit();
-      _typingTimer?.cancel();
-      _isTypingFlagSet = false;
-      _messageController.clear();
+      await _messageSender.sendText(
+        chatId: widget.chatId,
+        senderUid: user.uid,
+        otherUid: widget.otherUid,
+        text: text,
+      );
     } catch (e) {
+      // 전송에 실패했으면 비웠던 내용을 되돌려 그대로 다시 보낼 수 있게 한다.
+      if (_messageController.text.isEmpty) _messageController.text = text;
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('메시지 전송에 실패했습니다: ${friendlyErrorMessage(e)}')),
         );
       }
+    } finally {
+      _isSendingText = false;
     }
   }
 
@@ -919,6 +928,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                               return !myBlockedUids.contains(senderUid);
                             }).toList();
                             if (docs.isEmpty) {
+                              _lastMessageCount = 0;
                               return const FeedMessage(
                                 icon: Icons.chat_bubble_outline_rounded,
                                 title: '대화를 시작해보세요',
@@ -926,7 +936,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                               );
                             }
 
-                            _scrollToBottom();
+                            // 메시지 수가 실제로 늘었을 때(첫 로드·새 메시지)만
+                            // 맨 아래로 내린다. 상대의 입력 중/읽음 표시로 인한
+                            // 리빌드에서는 스크롤 위치를 건드리지 않는다.
+                            if (docs.length != _lastMessageCount) {
+                              _lastMessageCount = docs.length;
+                              _scrollToBottom();
+                            }
                             return ListView.builder(
                               controller: _scrollController,
                               padding: const EdgeInsets.all(16),
