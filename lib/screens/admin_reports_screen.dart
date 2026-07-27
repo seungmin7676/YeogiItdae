@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/error_messages.dart';
+import '../services/push_sender.dart';
 import '../theme/app_theme.dart';
 import '../widgets/confirm_dialog.dart';
 import '../widgets/feed_message.dart';
@@ -133,6 +134,11 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
       _notifyReporters(batch, group);
       _clearReports(batch, group);
       await batch.commit();
+      _pushModeration(
+        group,
+        authorType: 'item_hidden',
+        authorBody: "'${group.itemTitle}' 게시글이 신고 검토 후 숨김 처리됐어요",
+      );
     }, successMessage: '게시글을 숨김 처리했어요.');
   }
 
@@ -152,6 +158,11 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
       _notifyReporters(batch, group);
       _clearReports(batch, group);
       await batch.commit();
+      _pushModeration(
+        group,
+        authorType: 'item_removed',
+        authorBody: "'${group.itemTitle}' 게시글이 신고 검토 후 삭제됐어요",
+      );
     }, successMessage: '게시글을 삭제했어요.');
   }
 
@@ -231,6 +242,33 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
   void _clearReports(WriteBatch batch, _ReportGroup group) {
     for (final doc in group.docs) {
       batch.delete(doc.reference);
+    }
+  }
+
+  /// 처리 결과를 작성자와 신고자들에게 백그라운드 푸시로도 알린다.
+  void _pushModeration(
+    _ReportGroup group, {
+    required String authorType,
+    required String authorBody,
+  }) {
+    if (group.authorUid.isNotEmpty) {
+      sendPush(
+        recipientUid: group.authorUid,
+        type: authorType,
+        title: '신고 처리 안내',
+        body: authorBody,
+        data: {'itemId': group.itemId},
+      );
+    }
+    for (final reporterUid in group.reporterUids.toSet()) {
+      if (reporterUid.isEmpty) continue;
+      sendPush(
+        recipientUid: reporterUid,
+        type: 'report_result',
+        title: '신고 처리 완료',
+        body: "신고해주신 '${group.itemTitle}' 게시글이 처리됐어요",
+        data: {'itemId': group.itemId},
+      );
     }
   }
 }

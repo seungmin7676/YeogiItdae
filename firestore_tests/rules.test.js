@@ -543,6 +543,39 @@ test('bugReports: 일반 사용자는 읽을 수 없고 관리자만 읽을 수 
   await assertSucceeds(getDoc(doc(admin, 'bugReports', id)));
 });
 
+test('fcmTokens: 본인은 자기 토큰 문서를 읽고 쓸 수 있다', async () => {
+  const db = hallymUser('alice').firestore();
+  await assertSucceeds(
+    setDoc(doc(db, 'fcmTokens', 'alice'), { tokens: ['token-a'] }),
+  );
+  await assertSucceeds(getDoc(doc(db, 'fcmTokens', 'alice')));
+});
+
+test('fcmTokens: 남의 토큰 문서는 읽거나 쓸 수 없다', async () => {
+  const db = hallymUser('bob').firestore();
+  await assertFails(
+    setDoc(doc(db, 'fcmTokens', 'alice'), { tokens: ['token-x'] }),
+  );
+  await assertFails(getDoc(doc(db, 'fcmTokens', 'alice')));
+});
+
+test('userSettings: notifyChatMessage 등 알림 설정 키를 본인이 저장할 수 있다', async () => {
+  const db = hallymUser('alice').firestore();
+  await assertSucceeds(
+    setDoc(doc(db, 'userSettings', 'alice'), {
+      notifyChatMessage: false,
+      notifyChatStarted: true,
+    }),
+  );
+});
+
+test('userSettings: 허용되지 않은 키는 저장할 수 없다', async () => {
+  const db = hallymUser('alice').firestore();
+  await assertFails(
+    setDoc(doc(db, 'userSettings', 'alice'), { isAdmin: true }),
+  );
+});
+
 /** 규칙을 우회해 items 문서를 심고 새 문서 id를 반환한다. */
 async function seedItem(authorUid, overrides = {}) {
   let itemId;

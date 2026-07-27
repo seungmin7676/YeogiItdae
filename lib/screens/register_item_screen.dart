@@ -10,6 +10,7 @@ import '../models/lost_found_item.dart';
 import '../services/analytics_service.dart';
 import '../services/cloudinary_service.dart';
 import '../services/error_messages.dart';
+import '../services/push_sender.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/confirm_dialog.dart';
@@ -252,6 +253,19 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
             });
       }
       await batch.commit();
+    }
+
+    // 인앱 알림과 별개로, 각 구독자에게 백그라운드 푸시도 보낸다.
+    for (final (recipientUid, matchType, keyword) in matches) {
+      sendPush(
+        recipientUid: recipientUid,
+        type: 'keyword_match',
+        title: title,
+        body: matchType == 'category'
+            ? "구독한 카테고리 '$keyword'에 새 글이 등록됐어요"
+            : "저장한 키워드 '$keyword'와 일치하는 글이 등록됐어요",
+        data: {'itemId': itemId, 'matchType': matchType, 'keyword': keyword},
+      );
     }
   }
 
