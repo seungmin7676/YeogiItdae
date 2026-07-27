@@ -9,6 +9,15 @@ service cloud.firestore {
           && request.auth.token.email.matches('.*@hallym[.]ac[.]kr$');
     }
 
+    // 관리자 계정. 신고 검토(reports 열람/삭제)와 게시글 숨김/삭제 권한을
+    // 가진 단일 계정으로, 인증된 이메일 토큰으로 식별한다(위조 불가).
+    // 클라이언트(lib/services/admin.dart)의 kAdminEmail과 반드시 일치시킨다.
+    function isAdmin() {
+      return request.auth != null
+          && request.auth.token.email_verified == true
+          && request.auth.token.email == '20225216@hallym.ac.kr';
+    }
+
     // 클라이언트가 조작되어 잘못된 타입의 필드를 써도 다른 사용자의 홈 피드가
     // 캐스팅 오류로 깨지지 않도록, 서버 측에서 최소한의 타입을 검증한다.
     function isValidItemData(data) {
@@ -66,9 +75,16 @@ service cloud.firestore {
                         && request.resource.data.viewCount ==
                             (('viewCount' in resource.data) ? resource.data.viewCount : 0) + 1
                       )
+                      // 관리자는 신고 검토 조치로 숨김(hidden) 설정과 신고수
+                      // (reportCount) 초기화(반려)만 할 수 있다.
+                      || (
+                        isAdmin()
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hidden', 'reportCount'])
+                      )
                     );
+      // 작성자 본인 외에, 관리자는 신고 검토 결과로 어떤 글이든 삭제할 수 있다.
       allow delete: if isVerifiedHallymUser()
-                    && resource.data.authorUid == request.auth.uid;
+                    && (resource.data.authorUid == request.auth.uid || isAdmin());
     }
 
     // 신고: 신고자 본인 명의로만 생성 가능. 문서ID를 '{itemId}_{reporterUid}'로 고정해
@@ -78,7 +94,9 @@ service cloud.firestore {
       allow create: if isVerifiedHallymUser()
                     && request.resource.data.reporterUid == request.auth.uid
                     && reportId == request.resource.data.itemId + '_' + request.auth.uid;
-      allow read, update, delete: if false;
+      // 신고 큐 열람/처리(삭제)는 관리자만. 위변조 방지를 위해 수정은 항상 막는다.
+      allow read, delete: if isAdmin();
+      allow update: if false;
     }
 
     // 이메일 인증 코드는 Vercel 백엔드(Admin SDK)만 접근한다. 클라이언트 직접 접근은 전면 차단.
@@ -214,6 +232,14 @@ service cloud.firestore {
                     && request.resource.data.status == 'pending'
                     && get(/databases/$(database)/documents/items/$(itemId)).data.authorUid == request.auth.uid;
       allow update, delete: if false;
+    }
+
+    // 버그 신고: 로그인 사용자가 본인 명의로 생성만 가능. 사용자는 자신이
+    // 무엇을 보냈는지 다시 볼 필요가 없으므로 열람/수정/삭제는 관리자만.
+    match /bugReports/{bugReportId} {
+      allow create: if isVerifiedHallymUser()
+                    && request.resource.data.reporterUid == request.auth.uid;
+      allow read, update, delete: if isAdmin();
     }
 
     // 알림: 수신자 본인만 읽기/삭제/읽음처리 가능. 생성은 발신자 본인 명의로만 가능.

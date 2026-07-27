@@ -6,13 +6,16 @@ import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 
 import '../models/lost_found_item.dart';
+import '../services/admin.dart';
 import '../services/backend_exception.dart';
 import '../services/cloudinary_service.dart';
 import '../services/error_messages.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/confirm_dialog.dart';
+import '../widgets/count_badge.dart';
 import '../widgets/user_avatar.dart';
+import 'admin_reports_screen.dart';
 import 'blocked_users_screen.dart';
 import 'notification_settings_screen.dart';
 import 'saved_items_screen.dart';
@@ -248,6 +251,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         );
       },
     );
+    nicknameController.dispose();
   }
 
   Future<void> _confirmLogout() async {
@@ -261,6 +265,115 @@ class _ProfileScreenState extends State<ProfileScreen> {
     if (confirmed) {
       await FirebaseAuth.instance.signOut();
     }
+  }
+
+  Future<void> _reportBug() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    final controller = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    bool isSaving = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(kRadiusMd),
+              ),
+              title: const Text('버그 신고'),
+              content: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      '불편한 점이나 오류를 알려주시면 개선에 큰 도움이 돼요.',
+                      style: TextStyle(fontSize: 13, color: AppColors.inkMuted),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: controller,
+                      autofocus: true,
+                      maxLength: 1000,
+                      maxLines: 5,
+                      minLines: 3,
+                      textInputAction: TextInputAction.newline,
+                      validator: (value) => (value?.trim().isEmpty ?? true)
+                          ? '내용을 입력해주세요.'
+                          : null,
+                      decoration: const InputDecoration(
+                        hintText: '어떤 상황에서 무엇이 문제였는지 적어주세요.',
+                        alignLabelWithHint: true,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: isSaving
+                      ? null
+                      : () => Navigator.pop(dialogContext),
+                  child: const Text('취소'),
+                ),
+                TextButton(
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          if (!formKey.currentState!.validate()) return;
+                          setDialogState(() => isSaving = true);
+                          final messenger = ScaffoldMessenger.of(context);
+                          try {
+                            await FirebaseFirestore.instance
+                                .collection('bugReports')
+                                .add({
+                                  'reporterUid': user.uid,
+                                  'reporterEmail': user.email ?? '',
+                                  'reporterNickname': user.displayName ?? '',
+                                  'content': controller.text.trim(),
+                                  'createdAt': FieldValue.serverTimestamp(),
+                                });
+                            if (dialogContext.mounted) {
+                              Navigator.pop(dialogContext);
+                            }
+                            messenger.showSnackBar(
+                              const SnackBar(
+                                content: Text('소중한 의견 감사합니다. 신고가 접수됐어요.'),
+                              ),
+                            );
+                          } catch (e) {
+                            setDialogState(() => isSaving = false);
+                            if (dialogContext.mounted) {
+                              ScaffoldMessenger.of(dialogContext).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    '접수에 실패했습니다: ${friendlyErrorMessage(e)}',
+                                  ),
+                                ),
+                              );
+                            }
+                          }
+                        },
+                  child: isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('보내기'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    controller.dispose();
   }
 
   Future<void> _deleteAccount() async {
@@ -316,6 +429,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       },
     );
 
+    final password = passwordController.text;
+    passwordController.dispose();
     if (confirmed != true) return;
 
     final user = FirebaseAuth.instance.currentUser;
@@ -326,7 +441,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     try {
       final credential = EmailAuthProvider.credential(
         email: user.email!,
-        password: passwordController.text,
+        password: password,
       );
       await user.reauthenticateWithCredential(credential);
 
@@ -604,8 +719,19 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         );
                       },
                     ),
+                    _ProfileMenuTile(
+                      icon: Icons.bug_report_outlined,
+                      label: '버그 신고',
+                      onTap: _reportBug,
+                    ),
                   ],
                 ),
+                if (isCurrentUserAdmin()) ...[
+                  const SizedBox(height: 24),
+                  const SectionLabel('관리자'),
+                  const SizedBox(height: 10),
+                  const GroupSurface(children: [_AdminReportsTile()]),
+                ],
                 const SizedBox(height: 24),
                 const SectionLabel('계정'),
                 const SizedBox(height: 10),
@@ -626,6 +752,50 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
               ],
             ),
+    );
+  }
+}
+
+/// 관리자 전용 '신고 관리' 진입 타일. 미처리 신고 개수를 배지로 보여줘
+/// 별도 알림 없이도 새 신고가 쌓인 것을 알 수 있게 한다.
+class _AdminReportsTile extends StatelessWidget {
+  const _AdminReportsTile();
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance.collection('reports').snapshots(),
+      builder: (context, snapshot) {
+        final count = snapshot.data?.docs.length ?? 0;
+        return ListTile(
+          leading: const Icon(Icons.flag_outlined, color: AppColors.inkMuted),
+          title: const Text(
+            '신고 관리',
+            style: TextStyle(
+              color: AppColors.ink,
+              fontWeight: FontWeight.w600,
+              fontSize: 14.5,
+            ),
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (count > 0) ...[
+                CountBadge(count: count),
+                const SizedBox(width: 8),
+              ],
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: AppColors.inkFaint,
+              ),
+            ],
+          ),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (context) => const AdminReportsScreen()),
+          ),
+        );
+      },
     );
   }
 }

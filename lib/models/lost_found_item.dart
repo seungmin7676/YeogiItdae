@@ -81,9 +81,6 @@ const List<String> kLocations = [
   '(37) 한림대학교 춘천성심병원',
 ];
 
-/// 신고가 이 횟수 이상 누적되면 일반 피드에서 자동으로 숨긴다.
-const int kReportThreshold = 3;
-
 /// 조회수가 이 값 이상이면 목록에 "인기" 배지를 붙인다.
 const int kPopularViewThreshold = 20;
 
@@ -104,7 +101,11 @@ class LostFoundItem {
   final int reportCount;
   final int viewCount;
 
-  bool get isHidden => reportCount >= kReportThreshold;
+  /// 관리자가 신고를 검토해 숨김 처리했는지 여부. 예전에는 신고 누적 횟수로
+  /// 자동 판정했지만, 이제 숨김은 관리자만 명시적으로 설정한다.
+  final bool hidden;
+
+  bool get isHidden => hidden;
 
   LostFoundItem({
     this.id,
@@ -121,6 +122,7 @@ class LostFoundItem {
     this.createdAt,
     this.reportCount = 0,
     this.viewCount = 0,
+    this.hidden = false,
   });
 
   factory LostFoundItem.fromDoc(DocumentSnapshot<Map<String, dynamic>> doc) {
@@ -145,6 +147,7 @@ class LostFoundItem {
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
       reportCount: (data['reportCount'] as num?)?.toInt() ?? 0,
       viewCount: (data['viewCount'] as num?)?.toInt() ?? 0,
+      hidden: data['hidden'] as bool? ?? false,
     );
   }
 
@@ -180,6 +183,7 @@ class LostFoundItem {
       'imageUrls': imageUrls,
       'reportCount': 0,
       'viewCount': 0,
+      'hidden': false,
       'createdAt': FieldValue.serverTimestamp(),
     };
   }

@@ -20,6 +20,7 @@ const Map<String, String> _kNotificationTypeToSettingField = {
   'keyword_match': 'notifyKeywordMatch',
   'report_result': 'notifyReportResult',
   'item_hidden': 'notifyItemHidden',
+  'item_removed': 'notifyItemHidden',
 };
 
 bool _isNotificationTypeEnabled(Map<String, dynamic> settings, String type) {
@@ -314,12 +315,13 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                 final matchType = data['matchType'] as String? ?? 'keyword';
                 final type = data['type'] as String? ?? 'chat_started';
                 final isHiddenNotice = type == 'item_hidden';
+                final isRemovedNotice = type == 'item_removed';
                 final isReportResult = type == 'report_result';
                 final isKeywordMatch = type == 'keyword_match';
 
                 // v3 — 보더 카드 대신 풀블리드 행. 안읽음은 옅은 틴트 배경 +
                 // 굵은 텍스트, 아이콘은 종류별 색의 원형 틴트 안에 둔다.
-                final iconColor = isHiddenNotice
+                final iconColor = isHiddenNotice || isRemovedNotice
                     ? AppColors.danger
                     : isReportResult
                     ? AppColors.found
@@ -358,7 +360,9 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                         ),
                         alignment: Alignment.center,
                         child: Icon(
-                          isHiddenNotice
+                          isRemovedNotice
+                              ? Icons.delete_outline_rounded
+                              : isHiddenNotice
                               ? Icons.visibility_off_outlined
                               : isReportResult
                               ? Icons.flag_outlined
@@ -369,9 +373,18 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                           color: read ? AppColors.inkMuted : iconColor,
                         ),
                       ),
-                      title: isHiddenNotice
+                      title: isRemovedNotice
                           ? Text(
-                              "'$itemTitle' 게시글이 신고 누적으로 숨김 처리됐어요",
+                              "'$itemTitle' 게시글이 신고 검토 후 삭제됐어요",
+                              style: TextStyle(
+                                fontWeight: read
+                                    ? FontWeight.w500
+                                    : FontWeight.w700,
+                              ),
+                            )
+                          : isHiddenNotice
+                          ? Text(
+                              "'$itemTitle' 게시글이 신고 검토 후 숨김 처리됐어요",
                               style: TextStyle(
                                 fontWeight: read
                                     ? FontWeight.w500
@@ -420,7 +433,13 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                                 );
                               },
                             ),
-                      subtitle: isHiddenNotice
+                      subtitle: isRemovedNotice
+                          ? const Text(
+                              '커뮤니티 정책에 따라 삭제되었어요',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            )
+                          : isHiddenNotice
                           ? const Text(
                               '마이페이지 > 내 글에서 확인할 수 있어요',
                               maxLines: 1,

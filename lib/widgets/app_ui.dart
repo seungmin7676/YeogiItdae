@@ -156,6 +156,75 @@ class TriggerChip extends StatelessWidget {
   }
 }
 
+/// 두 값 중 하나를 고르는 세그먼트 토글. 활성/비활성 반전이 아니라 "둘 중
+/// 선택"임이 드러나도록 두 옵션을 항상 나란히 보여주고, 선택된 쪽만 잉크로
+/// 채운다(예: 최신순 ↔ 조회순). 두 라벨은 길이를 맞춰 쓰는 것을 권장한다.
+class SegmentedToggle extends StatelessWidget {
+  final String leftLabel;
+  final String rightLabel;
+
+  /// false면 왼쪽(leftLabel), true면 오른쪽(rightLabel)이 선택된 상태.
+  final bool value;
+  final ValueChanged<bool> onChanged;
+
+  const SegmentedToggle({
+    super.key,
+    required this.leftLabel,
+    required this.rightLabel,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 36,
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceAlt,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: AppColors.line),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _segment(leftLabel, selected: !value, onTap: () => onChanged(false)),
+          _segment(rightLabel, selected: value, onTap: () => onChanged(true)),
+        ],
+      ),
+    );
+  }
+
+  Widget _segment(
+    String label, {
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: selected ? null : onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 14),
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: selected ? AppColors.ink : Colors.transparent,
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            letterSpacing: -0.2,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w600,
+            color: selected ? Colors.white : AppColors.inkMuted,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// 선택형 칩 — 카테고리처럼 "그 자체가 값"인 필터. 선택되면 잉크 반전.
 class SelectChip extends StatelessWidget {
   final String label;
