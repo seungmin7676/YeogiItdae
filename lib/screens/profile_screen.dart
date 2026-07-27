@@ -15,6 +15,7 @@ import '../widgets/app_ui.dart';
 import '../widgets/confirm_dialog.dart';
 import '../widgets/count_badge.dart';
 import '../widgets/user_avatar.dart';
+import 'admin_bug_reports_screen.dart';
 import 'admin_reports_screen.dart';
 import 'blocked_users_screen.dart';
 import 'notification_settings_screen.dart';
@@ -730,7 +731,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   const SizedBox(height: 24),
                   const SectionLabel('관리자'),
                   const SizedBox(height: 10),
-                  const GroupSurface(children: [_AdminReportsTile()]),
+                  const GroupSurface(
+                    children: [_AdminReportsTile(), _AdminBugReportsTile()],
+                  ),
                 ],
                 const SizedBox(height: 24),
                 const SectionLabel('계정'),
@@ -793,6 +796,55 @@ class _AdminReportsTile extends StatelessWidget {
           onTap: () => Navigator.push(
             context,
             MaterialPageRoute(builder: (context) => const AdminReportsScreen()),
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// 관리자 전용 '버그 신고 관리' 진입 타일. 접수된 버그 신고 개수를 배지로
+/// 보여준다.
+class _AdminBugReportsTile extends StatelessWidget {
+  const _AdminBugReportsTile();
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance.collection('bugReports').snapshots(),
+      builder: (context, snapshot) {
+        final count = snapshot.data?.docs.length ?? 0;
+        return ListTile(
+          leading: const Icon(
+            Icons.bug_report_outlined,
+            color: AppColors.inkMuted,
+          ),
+          title: const Text(
+            '버그 신고 관리',
+            style: TextStyle(
+              color: AppColors.ink,
+              fontWeight: FontWeight.w600,
+              fontSize: 14.5,
+            ),
+          ),
+          trailing: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (count > 0) ...[
+                CountBadge(count: count),
+                const SizedBox(width: 8),
+              ],
+              const Icon(
+                Icons.chevron_right_rounded,
+                color: AppColors.inkFaint,
+              ),
+            ],
+          ),
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => const AdminBugReportsScreen(),
+            ),
           ),
         );
       },
