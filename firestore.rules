@@ -151,12 +151,14 @@ service cloud.firestore {
                   && request.resource.data.keys().hasOnly([
                        'onboardingSeen',
                        'notifyChatStarted',
+                       'notifyChatMessage',
                        'notifyKeywordMatch',
                        'notifyReportResult',
                        'notifyItemHidden'
                      ])
                   && isOptionalBool(request.resource.data, 'onboardingSeen')
                   && isOptionalBool(request.resource.data, 'notifyChatStarted')
+                  && isOptionalBool(request.resource.data, 'notifyChatMessage')
                   && isOptionalBool(request.resource.data, 'notifyKeywordMatch')
                   && isOptionalBool(request.resource.data, 'notifyReportResult')
                   && isOptionalBool(request.resource.data, 'notifyItemHidden');
@@ -240,6 +242,12 @@ service cloud.firestore {
       allow create: if isVerifiedHallymUser()
                     && request.resource.data.reporterUid == request.auth.uid;
       allow read, update, delete: if isAdmin();
+    }
+
+    // FCM 푸시 토큰: 본인만 자기 문서를 읽고 쓸 수 있다. 실제 발송은 Vercel
+    // 백엔드(Admin SDK)가 규칙을 우회해 읽으므로 다른 클라이언트엔 열지 않는다.
+    match /fcmTokens/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
     }
 
     // 알림: 수신자 본인만 읽기/삭제/읽음처리 가능. 생성은 발신자 본인 명의로만 가능.

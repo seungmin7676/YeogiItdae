@@ -10,6 +10,8 @@ import '../services/admin.dart';
 import '../services/backend_exception.dart';
 import '../services/cloudinary_service.dart';
 import '../services/error_messages.dart';
+import '../services/push_notifications.dart';
+import '../services/push_sender.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/confirm_dialog.dart';
@@ -264,6 +266,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       danger: true,
     );
     if (confirmed) {
+      // signOut 이전에 이 기기 토큰을 지워야, 로그아웃 후 규칙상 쓰기가 막히기
+      // 전에 정리가 끝난다(안 지우면 이 기기로 이전 계정 알림이 갈 수 있다).
+      await PushNotifications.unregisterToken();
       await FirebaseAuth.instance.signOut();
     }
   }
@@ -339,6 +344,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   'content': controller.text.trim(),
                                   'createdAt': FieldValue.serverTimestamp(),
                                 });
+                            // 관리자에게 새 버그 신고 접수 푸시.
+                            sendPush(
+                              type: 'bug_report',
+                              title: '새 버그 신고',
+                              body: controller.text.trim(),
+                            );
                             if (dialogContext.mounted) {
                               Navigator.pop(dialogContext);
                             }
@@ -509,6 +520,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
           .delete();
       await FirebaseFirestore.instance
           .collection('savedSearches')
+          .doc(user.uid)
+          .delete();
+      await FirebaseFirestore.instance
+          .collection('fcmTokens')
           .doc(user.uid)
           .delete();
 

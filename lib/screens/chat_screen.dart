@@ -8,10 +8,12 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../models/lost_found_item.dart';
+import '../services/analytics_service.dart';
 import '../services/chat_actions.dart';
 import '../services/cloudinary_service.dart';
 import '../services/error_messages.dart';
 import '../services/image_save_service.dart';
+import '../services/push_sender.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_user_data.dart';
 import '../widgets/confirm_dialog.dart';
@@ -26,12 +28,18 @@ class ChatScreen extends StatefulWidget {
   final String otherNickname;
   final String otherUid;
 
+  /// 게시글에서 "채팅하기"로 새로 들어올 때만 전달되는 값. 첫 메시지를 보내는
+  /// 순간 채팅방 문서를 생성하는 데 쓰인다(유령 채팅방 방지). 이미 있는 방을
+  /// 여는 경우(알림·채팅목록·딥링크)엔 null이며 생성 로직을 타지 않는다.
+  final String? itemId;
+
   const ChatScreen({
     super.key,
     required this.chatId,
     required this.itemTitle,
     required this.otherNickname,
     required this.otherUid,
+    this.itemId,
   });
 
   @override
@@ -168,6 +176,73 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         .catchError((_) {});
   }
 
+  // 첫 메시지를 보낼 때만 true가 된다. "채팅하기"로 화면에 들어오기만 하고
+  // 메시지를 안 보내면 채팅방 문서가 만들어지지 않아, 상대에게 유령 채팅방이
+  // 생기지 않는다.
+  bool _chatDocEnsured = false;
+
+  /// 첫 메시지 전송 직전에 채팅방 문서가 없으면 만든다. 문서를 만든 그 순간에만
+  /// 상대(작성자)에게 채팅 시작 알림을 보낸다. 이미 있으면 아무 것도 하지 않는다.
+  /// 이번 호출에서 방을 새로 만들었으면 true(=첫 문의)를 돌려준다.
+  Future<bool> _ensureChatExists(User user) async {
+    if (_chatDocEnsured) return false;
+    final chatRef = FirebaseFirestore.instance
+        .collection('chats')
+        .doc(widget.chatId);
+    final snap = await chatRef.get();
+    if (snap.exists) {
+      _chatDocEnsured = true;
+      return false;
+    }
+    // 문서가 없는데 생성 시드(itemId)도 없으면 만들 수 없다(정상 흐름에선
+    // 없는 방을 여는 쪽은 항상 itemId 없이 들어오므로 여기 오지 않는다).
+    final itemId = widget.itemId;
+    if (itemId == null) return false;
+
+    final uids = [user.uid, widget.otherUid]..sort();
+    await chatRef.set({
+      'participants': uids,
+      'participantNicknames': {
+        user.uid: user.displayName ?? '익명',
+        widget.otherUid: widget.otherNickname,
+      },
+      'itemId': itemId,
+      'itemTitle': widget.itemTitle,
+      'itemAuthorUid': widget.otherUid,
+      'createdAt': FieldValue.serverTimestamp(),
+      'resolutionStatus': 'none',
+    });
+    _chatDocEnsured = true;
+
+    // 실제 첫 문의가 발생한 지금 작성자에게 알림을 보낸다(예전에는 버튼만
+    // 눌러도 보냈다).
+    await FirebaseFirestore.instance.collection('notifications').add({
+      'recipientUid': widget.otherUid,
+      'senderUid': user.uid,
+      'senderNickname': user.displayName ?? '익명',
+      'type': 'chat_started',
+      'itemId': itemId,
+      'itemTitle': widget.itemTitle,
+      'chatId': widget.chatId,
+      'read': false,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    logChatStarted();
+    return true;
+  }
+
+  /// 방금 보낸 메시지를 상대에게 푸시로 보낸다. 첫 문의(방 생성)면
+  /// chat_started, 이후면 chat_message 종류로 발송한다.
+  void _pushForMessage(User user, {required bool created, required String body}) {
+    sendPush(
+      recipientUid: widget.otherUid,
+      type: created ? 'chat_started' : 'chat_message',
+      title: user.displayName ?? '익명',
+      body: body,
+      data: {'chatId': widget.chatId},
+    );
+  }
+
   Future<void> _markAsRead() async {
     final myUid = FirebaseAuth.instance.currentUser?.uid;
     if (myUid == null) return;
@@ -199,12 +274,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _isTypingFlagSet = false;
 
     try {
-      await _messageSender.sendText(
+      final created = await _ensureChatExists(user);
+      final sent = await _messageSender.sendText(
         chatId: widget.chatId,
         senderUid: user.uid,
         otherUid: widget.otherUid,
         text: text,
       );
+      if (sent) _pushForMessage(user, created: created, body: text);
     } catch (e) {
       // 전송에 실패했으면 비웠던 내용을 되돌려 그대로 다시 보낼 수 있게 한다.
       if (_messageController.text.isEmpty) _messageController.text = text;
@@ -265,6 +342,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         urls.add(await uploadImageToCloudinary(file));
       }
 
+      final created = await _ensureChatExists(user);
       final batch = FirebaseFirestore.instance.batch();
       final chatRef = FirebaseFirestore.instance
           .collection('chats')
@@ -277,15 +355,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           'createdAt': FieldValue.serverTimestamp(),
         });
       }
+      final lastMessageText = urls.length > 1
+          ? '사진 ${urls.length}장을 보냈습니다'
+          : '사진을 보냈습니다';
       batch.update(chatRef, {
-        'lastMessage': urls.length > 1
-            ? '사진 ${urls.length}장을 보냈습니다'
-            : '사진을 보냈습니다',
+        'lastMessage': lastMessageText,
         'lastMessageAt': FieldValue.serverTimestamp(),
         'lastReadAt.${user.uid}': FieldValue.serverTimestamp(),
         'unreadCount.${widget.otherUid}': FieldValue.increment(urls.length),
       });
       await batch.commit();
+      _pushForMessage(user, created: created, body: lastMessageText);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -553,11 +633,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     final confirmed = await showConfirmDialog(
       context,
-      title: '실명 공개',
+      title: '실명·학번 공개',
       content:
-          '상대방에게 가입 시 등록한 실명을 공개합니다.\n'
+          '상대방에게 가입 시 등록한 실명과 학번을 공개합니다.\n'
           '물품 인수·인계 등 신원 확인이 필요할 때만 사용해주세요.\n'
-          '공개한 실명은 취소할 수 없습니다.',
+          '공개한 정보는 취소할 수 없습니다.',
       confirmLabel: '공개하기',
     );
     if (!confirmed) return;
@@ -568,6 +648,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           .doc(myUid)
           .get();
       final realName = privateDoc.data()?['realName'] as String? ?? '';
+      final studentId = privateDoc.data()?['studentId'] as String? ?? '';
       if (realName.isEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(
@@ -577,20 +658,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         return;
       }
 
+      // 배너는 revealedRealNames.$uid의 문자열을 그대로 보여주므로, 실명과
+      // 학번을 함께 담은 표시용 문자열로 저장한다("홍길동 (20225216)").
+      final revealValue = studentId.isEmpty
+          ? realName
+          : '$realName ($studentId)';
       await FirebaseFirestore.instance
           .collection('chats')
           .doc(widget.chatId)
-          .update({'revealedRealNames.$myUid': realName});
+          .update({'revealedRealNames.$myUid': revealValue});
 
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('실명을 공개했습니다.')));
+        ).showSnackBar(const SnackBar(content: Text('실명과 학번을 공개했습니다.')));
       }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('실명 공개에 실패했습니다: ${friendlyErrorMessage(e)}')),
+          SnackBar(
+            content: Text('실명·학번 공개에 실패했습니다: ${friendlyErrorMessage(e)}'),
+          ),
         );
       }
     }
@@ -759,7 +847,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       value: 'resolve',
                       child: Text('거래완료 확인 요청하기'),
                     ),
-                  const PopupMenuItem(value: 'reveal', child: Text('실명 공개하기')),
+                  const PopupMenuItem(
+                    value: 'reveal',
+                    child: Text('실명·학번 공개하기'),
+                  ),
                   const PopupMenuItem(value: 'leave', child: Text('채팅방 나가기')),
                   const PopupMenuItem(
                     value: 'block',
@@ -811,7 +902,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 banners.add(
                   _ChatBanner(
                     icon: Icons.verified_user_outlined,
-                    text: '${widget.otherNickname}님이 실명을 공개했어요: $otherRealName',
+                    text: '${widget.otherNickname}님이 실명·학번을 공개했어요: $otherRealName',
                   ),
                 );
               }

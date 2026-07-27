@@ -3,6 +3,8 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
+    <!-- Android 13+ 에서 알림을 표시하려면 런타임 권한이 필요하다. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
         android:label="여기있대!"
         android:name="${applicationName}"
@@ -30,6 +32,11 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <!-- FCM이 백그라운드/종료 상태에서 표시하는 알림의 기본 채널.
+             앱(Dart)에서 만드는 채널 id와 동일하게 맞춘다. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="high_importance_channel" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

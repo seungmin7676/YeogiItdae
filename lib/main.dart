@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'firebase_options.dart';
 import 'screens/auth_gate.dart';
 import 'services/analytics_service.dart';
+import 'services/push_notifications.dart';
 import 'theme/app_theme.dart';
 import 'widgets/app_user_data.dart';
 
@@ -46,6 +47,12 @@ void main() {
           return true;
         };
       }
+
+      // 푸시 알림(권한·토큰·핸들러) 초기화. 실패해도 앱은 계속 떠야 하므로
+      // 삼켜서 처리한다(예: 웹, 권한 거부, FCM 설정 미비).
+      try {
+        await PushNotifications.init();
+      } catch (_) {}
 
       runApp(const MyApp());
     },
@@ -237,6 +244,7 @@ class MyApp extends StatelessWidget {
           space: 1,
         ),
       ),
+      navigatorKey: rootNavigatorKey,
       builder: (context, child) =>
           AppUserDataProvider(child: child ?? const SizedBox.shrink()),
       // 대부분의 화면 전환이 이름 없는 라우트(Navigator.push +

@@ -7,9 +7,9 @@ import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/lost_found_item.dart';
-import '../services/analytics_service.dart';
 import '../services/error_messages.dart';
 import '../services/image_save_service.dart';
+import '../services/push_sender.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_user_data.dart';
 import '../widgets/confirm_dialog.dart';
@@ -690,6 +690,13 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
         'reportCount': FieldValue.increment(1),
       });
       await batch.commit();
+      // 관리자에게 새 신고 접수 푸시(수신자 지정 없이 백엔드가 관리자로 라우팅).
+      sendPush(
+        type: 'report_received',
+        title: '새 신고 접수',
+        body: "'${item.title}' 게시글이 신고됐어요 ($selectedReason)",
+        data: {'itemId': item.id ?? ''},
+      );
       messenger.showSnackBar(
         const SnackBar(content: Text('신고가 접수되었습니다. 관리자가 검토할게요.')),
       );
@@ -809,61 +816,19 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
       return;
     }
 
-    setState(() => _isProcessing = true);
     final uids = [currentUser.uid, item.authorUid]..sort();
     final chatId = '${item.id}_${uids.join('_')}';
-    final chatRef = FirebaseFirestore.instance.collection('chats').doc(chatId);
 
+    // 유령 채팅방 방지: 여기서는 채팅방 문서를 만들지도, 알림을 보내지도
+    // 않는다. 실제 첫 메시지를 보내는 순간 ChatScreen이 방을 만들고 작성자에게
+    // 알림을 보낸다(itemId를 시드로 넘겨준다).
     final navigator = Navigator.of(context);
-
-    try {
-      final snap = await chatRef.get();
-      if (!snap.exists) {
-        await chatRef.set({
-          'participants': uids,
-          'participantNicknames': {
-            currentUser.uid: currentUser.displayName ?? '익명',
-            item.authorUid: item.authorNickname,
-          },
-          'itemId': item.id,
-          'itemTitle': item.title,
-          'itemAuthorUid': item.authorUid,
-          'createdAt': FieldValue.serverTimestamp(),
-          'lastMessage': '',
-          'lastMessageAt': FieldValue.serverTimestamp(),
-          'lastReadAt': {currentUser.uid: FieldValue.serverTimestamp()},
-          'unreadCount': {currentUser.uid: 0, item.authorUid: 0},
-          'resolutionStatus': 'none',
-        });
-
-        await FirebaseFirestore.instance.collection('notifications').add({
-          'recipientUid': item.authorUid,
-          'senderUid': currentUser.uid,
-          'senderNickname': currentUser.displayName ?? '익명',
-          'type': 'chat_started',
-          'itemId': item.id,
-          'itemTitle': item.title,
-          'chatId': chatId,
-          'read': false,
-          'createdAt': FieldValue.serverTimestamp(),
-        });
-        logChatStarted();
-      }
-    } catch (e) {
-      if (mounted) setState(() => _isProcessing = false);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('채팅을 시작하지 못했습니다: ${friendlyErrorMessage(e)}')),
-        );
-      }
-      return;
-    }
-
     navigator.pop();
     navigator.push(
       MaterialPageRoute(
         builder: (context) => ChatScreen(
           chatId: chatId,
+          itemId: item.id,
           itemTitle: item.title,
           otherNickname: item.authorNickname,
           otherUid: item.authorUid,

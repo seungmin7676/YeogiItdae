@@ -21,8 +21,13 @@ class _NotificationTypeOption {
 const List<_NotificationTypeOption> _kNotificationTypes = [
   _NotificationTypeOption(
     field: 'notifyChatStarted',
-    title: '채팅 알림',
+    title: '채팅 시작 알림',
     subtitle: '누군가 내 게시글로 채팅을 걸었을 때',
+  ),
+  _NotificationTypeOption(
+    field: 'notifyChatMessage',
+    title: '채팅 메시지 알림',
+    subtitle: '진행 중인 채팅에 새 메시지가 왔을 때',
   ),
   _NotificationTypeOption(
     field: 'notifyKeywordMatch',
@@ -32,12 +37,12 @@ const List<_NotificationTypeOption> _kNotificationTypes = [
   _NotificationTypeOption(
     field: 'notifyReportResult',
     title: '신고 처리 알림',
-    subtitle: '내가 신고한 글이 숨김 처리됐을 때',
+    subtitle: '내가 신고한 글이 처리됐을 때',
   ),
   _NotificationTypeOption(
     field: 'notifyItemHidden',
-    title: '게시글 숨김 알림',
-    subtitle: '내 게시글이 신고 누적으로 숨김 처리됐을 때',
+    title: '게시글 처리 알림',
+    subtitle: '내 게시글이 관리자 검토로 숨김·삭제됐을 때',
   ),
 ];
 
