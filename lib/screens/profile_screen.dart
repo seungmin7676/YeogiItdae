@@ -2,7 +2,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 
 import '../models/lost_found_item.dart';
@@ -12,6 +11,8 @@ import '../services/cloudinary_service.dart';
 import '../services/error_messages.dart';
 import '../services/push_notifications.dart';
 import '../services/push_sender.dart';
+import '../services/user_profile_cache.dart';
+import '../services/withdrawal.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/confirm_dialog.dart';
@@ -122,6 +123,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (action == 'remove') {
         try {
           await ref.set({'photoUrl': ''}, SetOptions(merge: true));
+          // 다른 화면(채팅 목록 등)은 공개 프로필을 세션 캐시로 읽으므로,
+          // 본인이 바꾼 값은 캐시를 비워 바로 반영되게 한다.
+          UserProfileCache.invalidate(myUid);
         } catch (e) {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -144,6 +148,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       try {
         final url = await uploadImageToCloudinary(picked);
         await ref.set({'photoUrl': url}, SetOptions(merge: true));
+        UserProfileCache.invalidate(myUid);
       } catch (e) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -214,6 +219,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 .collection('userPublicProfiles')
                                 .doc(user.uid)
                                 .set({'nickname': newNickname});
+                            UserProfileCache.invalidate(user.uid);
                             try {
                               await _propagateNicknameChange(
                                 user.uid,
@@ -269,6 +275,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
       // signOut 이전에 이 기기 토큰을 지워야, 로그아웃 후 규칙상 쓰기가 막히기
       // 전에 정리가 끝난다(안 지우면 이 기기로 이전 계정 알림이 갈 수 있다).
       await PushNotifications.unregisterToken();
+      // 다음 계정이 이전 세션에서 캐시해둔 프로필을 보지 않게 비운다.
+      UserProfileCache.clear();
       await FirebaseAuth.instance.signOut();
     }
   }
@@ -389,6 +397,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 
   Future<void> _deleteAccount() async {
+    // 되돌릴 수 없는 작업이라, 연속 탭으로 확인 다이얼로그가 겹쳐 쌓여
+    // 재인증·삭제가 두 번 실행되는 일이 없도록 진입 자체를 막는다.
+    if (_isDeleting) return;
     final passwordController = TextEditingController();
     final formKey = GlobalKey<FormState>();
 
@@ -407,7 +418,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  '탈퇴 시 계정과 내가 작성한 게시글이 모두 삭제되며,\n되돌릴 수 없습니다.\n계속하려면 비밀번호를 입력해주세요.',
+                  '탈퇴 시 계정과 내가 작성한 게시글이 모두 삭제되며, 되돌릴 수 없습니다.\n'
+                  '탈퇴 후 $kWithdrawalCooldownDays일 동안은 같은 학번으로 다시 가입할 수 없습니다.\n\n'
+                  '계속하려면 비밀번호를 입력해주세요.',
                 ),
                 const SizedBox(height: 16),
                 TextFormField(
@@ -443,7 +456,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
     final password = passwordController.text;
     passwordController.dispose();
-    if (confirmed != true) return;
+    if (confirmed != true || _isDeleting) return;
 
     final user = FirebaseAuth.instance.currentUser;
     if (user == null || user.email == null) return;
@@ -456,20 +469,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
         password: password,
       );
       await user.reauthenticateWithCredential(credential);
-
-      // reports는 클라이언트가 읽기/쓰기 전부 차단되어 있어(신고 사유 비공개,
-      // 위변조 방지) 직접 지울 수 없다. Admin SDK를 쓰는 백엔드에 대신 요청한다.
-      // 실패해도 계정 삭제 자체를 막을 정도는 아니므로 조용히 넘어간다.
-      try {
-        final idToken = await user.getIdToken();
-        await http.post(
-          Uri.parse('$kVerifyBackendUrl/api/delete-my-reports'),
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer $idToken',
-          },
-        );
-      } catch (_) {}
 
       final myItems = await itemsCollection
           .where('authorUid', isEqualTo: user.uid)
@@ -527,7 +526,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
           .doc(user.uid)
           .delete();
 
-      await user.delete();
+      // 계정 삭제와 신고 기록 정리, 그리고 "탈퇴 후 재가입 제한" 기록은
+      // 백엔드가 한 번에 처리한다. 클라이언트가 계정만 지우면 제한 기록이
+      // 빠져 곧바로 같은 학번으로 재가입할 수 있게 된다.
+      UserProfileCache.clear();
+      await withdrawAccount();
     } on FirebaseAuthException catch (e) {
       if (mounted) {
         setState(() => _isDeleting = false);
@@ -538,6 +541,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text(message)));
+      }
+    } on BackendException catch (_) {
+      // 데이터는 지워졌지만 계정 삭제 요청이 실패한 상태다. 다시 시도하면
+      // (이미 비어 있는 데이터를 다시 지우고) 정상적으로 마무리된다.
+      if (mounted) {
+        setState(() => _isDeleting = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('탈퇴를 마치지 못했어요. 네트워크 상태를 확인한 뒤 다시 시도해주세요.'),
+          ),
+        );
       }
     } catch (e) {
       if (mounted) {

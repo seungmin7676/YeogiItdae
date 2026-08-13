@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../services/item_queries.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_user_data.dart';
 import '../widgets/count_badge.dart';
@@ -84,7 +85,10 @@ class _MainNavScreenState extends State<MainNavScreen> {
           .limit(_pageSize * _loadedPages)
           .snapshots(),
       builder: (context, snapshot) {
-        if (_isLoadingMoreChats) {
+        if (shouldFinishPageLoad(
+          isLoadingMore: _isLoadingMoreChats,
+          hasLiveSnapshot: snapshot.connectionState == ConnectionState.active,
+        )) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (mounted) setState(() => _isLoadingMoreChats = false);
           });
@@ -96,7 +100,12 @@ class _MainNavScreenState extends State<MainNavScreen> {
         );
         final docs = snapshot.data?.docs;
         final hasMoreChats =
-            docs != null && docs.length == _pageSize * _loadedPages;
+            docs != null &&
+            shouldShowLoadMore(
+              loadedCount: docs.length,
+              limit: _pageSize * _loadedPages,
+              isLoadingMore: _isLoadingMoreChats,
+            );
         final tabs = [
           const HomeFeedScreen(),
           const MyPostsScreen(),
@@ -106,10 +115,12 @@ class _MainNavScreenState extends State<MainNavScreen> {
             blockedUids: blockedUids,
             hasMore: hasMoreChats,
             isLoadingMore: _isLoadingMoreChats,
-            onLoadMore: () => setState(() {
-              _isLoadingMoreChats = true;
-              _loadedPages += 1;
-            }),
+            onLoadMore: _isLoadingMoreChats
+                ? null
+                : () => setState(() {
+                    _isLoadingMoreChats = true;
+                    _loadedPages += 1;
+                  }),
           ),
           const ProfileScreen(),
         ];

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/error_messages.dart';
+import '../services/item_queries.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/app_user_data.dart';
@@ -11,6 +12,7 @@ import '../widgets/confirm_dialog.dart';
 import '../widgets/count_badge.dart';
 import '../widgets/feed_message.dart';
 import '../widgets/optimistic_hide_mixin.dart';
+import '../widgets/user_profile.dart';
 import 'chat_screen.dart';
 import 'item_detail_sheet.dart';
 
@@ -172,11 +174,82 @@ class _NotificationsScreenState extends State<NotificationsScreen>
   );
 
   bool _isMarkingAllRead = false;
+  bool _isDeletingAll = false;
+
+  /// 목록 쿼리. 당겨서 새로고침도 화면에 실제로 보여주는 만큼만 다시 읽도록
+  /// 같은 limit을 쓴다(예전에는 limit 없이 전체 알림 이력을 통째로 다시
+  /// 읽어와, 오래 쓴 계정일수록 새로고침 한 번의 읽기 비용이 계속 커졌다).
+  Query<Map<String, dynamic>> _notificationsQuery(String? uid) =>
+      FirebaseFirestore.instance
+          .collection('notifications')
+          .where('recipientUid', isEqualTo: uid)
+          .orderBy('createdAt', descending: true)
+          .limit(_pageSize * _loadedPages);
+
+  Future<void> _refresh(String? uid) async {
+    try {
+      await _notificationsQuery(
+        uid,
+      ).get(const GetOptions(source: Source.server));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('새로고침하지 못했어요: ${friendlyErrorMessage(e)}')),
+      );
+    }
+  }
+
+  Future<void> _deleteAllNotifications(
+    BuildContext context,
+    String? uid,
+  ) async {
+    if (uid == null || _isDeletingAll) return;
+    final confirmed = await showConfirmDialog(
+      context,
+      title: '알림 모두 삭제',
+      content: '모든 알림을 삭제하시겠습니까? 삭제 후에는 되돌릴 수 없습니다.',
+      confirmLabel: '모두 삭제',
+      danger: true,
+    );
+    if (!confirmed || !context.mounted) return;
+
+    setState(() => _isDeletingAll = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final all = await FirebaseFirestore.instance
+          .collection('notifications')
+          .where('recipientUid', isEqualTo: uid)
+          .get();
+      if (all.docs.isEmpty) {
+        messenger.showSnackBar(const SnackBar(content: Text('삭제할 알림이 없어요.')));
+        return;
+      }
+      // Firestore 배치는 최대 500개 작업까지만 허용하므로 청크로 나눠 커밋한다.
+      const chunkSize = 450;
+      for (var i = 0; i < all.docs.length; i += chunkSize) {
+        final chunk = all.docs.sublist(
+          i,
+          (i + chunkSize) > all.docs.length ? all.docs.length : i + chunkSize,
+        );
+        final batch = FirebaseFirestore.instance.batch();
+        for (final doc in chunk) {
+          batch.delete(doc.reference);
+        }
+        await batch.commit();
+      }
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('삭제에 실패했습니다: ${friendlyErrorMessage(e)}')),
+      );
+    } finally {
+      if (mounted) setState(() => _isDeletingAll = false);
+    }
+  }
 
   Future<void> _markAllRead(BuildContext context, String? uid) async {
     // 연속 탭으로 같은 조회+배치 커밋이 중복 실행되지 않도록 막는다.
     if (uid == null || _isMarkingAllRead) return;
-    _isMarkingAllRead = true;
+    setState(() => _isMarkingAllRead = true);
     final messenger = ScaffoldMessenger.of(context);
     try {
       final unread = await FirebaseFirestore.instance
@@ -209,7 +282,7 @@ class _NotificationsScreenState extends State<NotificationsScreen>
         SnackBar(content: Text('읽음 처리에 실패했습니다: ${friendlyErrorMessage(e)}')),
       );
     } finally {
-      _isMarkingAllRead = false;
+      if (mounted) setState(() => _isMarkingAllRead = false);
     }
   }
 
@@ -220,20 +293,30 @@ class _NotificationsScreenState extends State<NotificationsScreen>
       backgroundColor: AppColors.bg,
       appBar: AppBar(
         title: const Text('알림'),
+        // 두 작업 모두 알림 수만큼 배치 커밋이 도는 동안 몇 초씩 걸릴 수 있다.
+        // 눌렀는데 아무 반응이 없어 다시 누르는 일이 없도록 진행 중임을
+        // 버튼에서 바로 보여주고, 그동안 다른 일괄 작업도 잠근다.
         actions: [
           TextButton(
-            onPressed: () => _markAllRead(context, uid),
-            child: const Text('모두 읽음'),
+            onPressed: (_isMarkingAllRead || _isDeletingAll)
+                ? null
+                : () => _markAllRead(context, uid),
+            child: Text(_isMarkingAllRead ? '처리 중…' : '모두 읽음'),
           ),
+          TextButton(
+            onPressed: (_isMarkingAllRead || _isDeletingAll)
+                ? null
+                : () => _deleteAllNotifications(context, uid),
+            child: Text(
+              _isDeletingAll ? '삭제 중…' : '모두 삭제',
+              style: const TextStyle(color: AppColors.danger),
+            ),
+          ),
+          const SizedBox(width: 4),
         ],
       ),
       body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: FirebaseFirestore.instance
-            .collection('notifications')
-            .where('recipientUid', isEqualTo: uid)
-            .orderBy('createdAt', descending: true)
-            .limit(_pageSize * _loadedPages)
-            .snapshots(),
+        stream: _notificationsQuery(uid).snapshots(),
         builder: (context, snapshot) {
           final appUserData = AppUserData.of(context);
           final blockedUids = appUserData.blockedUids;
@@ -249,13 +332,19 @@ class _NotificationsScreenState extends State<NotificationsScreen>
               child: CircularProgressIndicator(color: AppColors.primary),
             );
           }
-          if (_isLoadingMore) {
+          if (shouldFinishPageLoad(
+            isLoadingMore: _isLoadingMore,
+            hasLiveSnapshot: snapshot.connectionState == ConnectionState.active,
+          )) {
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (mounted) setState(() => _isLoadingMore = false);
             });
           }
-          final canLoadMore =
-              snapshot.data!.docs.length == _pageSize * _loadedPages;
+          final canLoadMore = shouldShowLoadMore(
+            loadedCount: snapshot.data!.docs.length,
+            limit: _pageSize * _loadedPages,
+            isLoadingMore: _isLoadingMore,
+          );
 
           // 내가 차단한 사용자가 보낸 알림은 차단 사실이 드러나지 않도록
           // 완전히 걸러내고, 알림 설정에서 꺼둔 종류와 방금 로컬에서
@@ -285,23 +374,23 @@ class _NotificationsScreenState extends State<NotificationsScreen>
 
           return RefreshIndicator(
             color: AppColors.primary,
-            onRefresh: () => FirebaseFirestore.instance
-                .collection('notifications')
-                .where('recipientUid', isEqualTo: uid)
-                .orderBy('createdAt', descending: true)
-                .get(const GetOptions(source: Source.server)),
+            onRefresh: () => _refresh(uid),
             child: ListView.separated(
               padding: const EdgeInsets.only(bottom: 24),
               itemCount: docs.length + (canLoadMore ? 1 : 0),
-              separatorBuilder: (context, index) => const Divider(indent: 72),
+              // 구분선은 아이콘 원(40) 오른쪽, 즉 본문 텍스트가 시작하는
+              // 지점(좌측 패딩 20 + 아이콘 40 + 간격 16)에 맞춘다.
+              separatorBuilder: (context, index) => const Divider(indent: 76),
               itemBuilder: (context, index) {
                 if (index == docs.length) {
                   return LoadMoreButton(
                     isLoading: _isLoadingMore,
-                    onPressed: () => setState(() {
-                      _isLoadingMore = true;
-                      _loadedPages += 1;
-                    }),
+                    onPressed: _isLoadingMore
+                        ? null
+                        : () => setState(() {
+                            _isLoadingMore = true;
+                            _loadedPages += 1;
+                          }),
                   );
                 }
                 final doc = docs[index];
@@ -393,7 +482,7 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                             )
                           : isReportResult
                           ? Text(
-                              "신고해주신 '$itemTitle' 게시글이 처리됐어요",
+                              "신고해주신 '$itemTitle' 게시글 검토가 완료됐어요",
                               style: TextStyle(
                                 fontWeight: read
                                     ? FontWeight.w500
@@ -411,27 +500,17 @@ class _NotificationsScreenState extends State<NotificationsScreen>
                                     : FontWeight.w700,
                               ),
                             )
-                          : StreamBuilder<
-                              DocumentSnapshot<Map<String, dynamic>>
-                            >(
-                              stream: FirebaseFirestore.instance
-                                  .collection('userPublicProfiles')
-                                  .doc(senderUid)
-                                  .snapshots(),
-                              builder: (context, profileSnapshot) {
-                                final senderNickname =
-                                    profileSnapshot.data?.data()?['nickname']
-                                        as String? ??
-                                    fallbackNickname;
-                                return Text(
-                                  '$senderNickname님이 채팅을 걸었어요',
-                                  style: TextStyle(
-                                    fontWeight: read
-                                        ? FontWeight.w500
-                                        : FontWeight.w700,
-                                  ),
-                                );
-                              },
+                          // 행마다 실시간 리스너를 붙이지 않고 세션 캐시에서
+                          // 읽는다(user_profile_cache.dart 참고).
+                          : UserProfileNickname(
+                              uid: senderUid,
+                              fallbackNickname: fallbackNickname,
+                              format: (nickname) => '$nickname님이 채팅을 걸었어요',
+                              style: TextStyle(
+                                fontWeight: read
+                                    ? FontWeight.w500
+                                    : FontWeight.w700,
+                              ),
                             ),
                       subtitle: isRemovedNotice
                           ? const Text(

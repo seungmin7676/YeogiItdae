@@ -1,16 +1,16 @@
-import 'dart:typed_data';
+import 'dart:async';
 
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/analytics_service.dart';
 import '../services/cloudinary_service.dart';
 import '../services/error_messages.dart';
-import '../services/push_sender.dart';
+import '../services/keyword_notifier.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/confirm_dialog.dart';
@@ -38,6 +38,13 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
   bool _isSubmitting = false;
 
   static const int _maxImages = 5;
+
+  // 입력 길이 상한. 제목이 지나치게 길면 목록·상세·알림·공유 문구가 모두
+  // 무너지고, 본문은 Firestore 문서 크기(1MB)까지 붙여 넣을 수 있어 비용과
+  // 남용 위험이 있다. 화면에서 자연스럽게 읽히는 선에서 잘라둔다.
+  static const int _maxTitleLength = 40;
+  static const int _maxDescriptionLength = 1000;
+  static const int _maxLocationDetailLength = 50;
   final List<XFile> _newImages = [];
   final List<Uint8List> _newImageBytes = [];
   List<String> _existingImageUrls = [];
@@ -179,96 +186,6 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
     super.dispose();
   }
 
-  /// 등록된 모든 사용자의 저장 키워드/구독 카테고리와 새 글을 비교해, 일치하는
-  /// 사용자(본인 제외)에게 알림을 보낸다. 서버 함수 없이 클라이언트에서 직접
-  /// 매칭하는 방식이라 사용자 수가 많아지면 이 한 번의 등록 작업이 읽는 문서
-  /// 수도 함께 늘어난다는 한계가 있다. 키워드는 "부분 포함"까지 잡아내야
-  /// 해서(예: 저장 키워드 "가방"이 글 제목 "책가방"에도 일치) Firestore
-  /// 쿼리로 필터링할 수 없고, 결국 전체 savedSearches를 읽어 클라이언트에서
-  /// 대조하는 방법뿐이다. 사용자 수가 아주 많아지면 이 한계를 넘기 위해
-  /// (부분 포함 대신) 키워드를 토큰 단위로 정확히 매칭하는 방식으로 데이터
-  /// 구조를 바꿔 arrayContainsAny 쿼리로 대상만 골라 읽는 재설계가 필요하다
-  /// (매칭 정확도가 달라지는 변경이라 지금은 적용하지 않았다).
-  ///
-  /// 키워드와 카테고리가 둘 다 일치해도 한 사람에게는 알림을 한 번만
-  /// 보낸다(키워드를 우선한다).
-  Future<void> _notifyKeywordMatches({
-    required String itemId,
-    required String title,
-    required String description,
-    required String category,
-    required String posterUid,
-  }) async {
-    final haystack = '$title $description'.toLowerCase();
-    final snap = await FirebaseFirestore.instance
-        .collection('savedSearches')
-        .get();
-
-    final matches = <(String recipientUid, String matchType, String keyword)>[];
-    for (final doc in snap.docs) {
-      if (doc.id == posterUid) continue;
-      final data = doc.data();
-      final keywords = List<String>.from(data['keywords'] as List? ?? const []);
-      final matchedKeyword = keywords.firstWhere(
-        (k) => k.trim().isNotEmpty && haystack.contains(k.trim().toLowerCase()),
-        orElse: () => '',
-      );
-      final categories = List<String>.from(
-        data['categories'] as List? ?? const [],
-      );
-      final matchedCategory = categories.contains(category) ? category : '';
-
-      if (matchedKeyword.isEmpty && matchedCategory.isEmpty) continue;
-
-      matches.add((
-        doc.id,
-        matchedKeyword.isNotEmpty ? 'keyword' : 'category',
-        matchedKeyword.isNotEmpty ? matchedKeyword : matchedCategory,
-      ));
-    }
-    if (matches.isEmpty) return;
-
-    // Firestore 배치는 최대 500개 작업까지만 허용하므로, 일치한 사용자가
-    // 많으면(예: 인기 카테고리를 수백 명이 구독) 청크로 나눠 커밋한다.
-    // 그렇지 않으면 배치 전체가 실패해 매칭된 알림이 하나도 안 보내진다.
-    const chunkSize = 450;
-    for (var i = 0; i < matches.length; i += chunkSize) {
-      final chunk = matches.sublist(
-        i,
-        (i + chunkSize) > matches.length ? matches.length : i + chunkSize,
-      );
-      final batch = FirebaseFirestore.instance.batch();
-      for (final (recipientUid, matchType, keyword) in chunk) {
-        batch
-            .set(FirebaseFirestore.instance.collection('notifications').doc(), {
-              'recipientUid': recipientUid,
-              'senderUid': posterUid,
-              'type': 'keyword_match',
-              'matchType': matchType,
-              'keyword': keyword,
-              'itemId': itemId,
-              'itemTitle': title,
-              'read': false,
-              'createdAt': FieldValue.serverTimestamp(),
-            });
-      }
-      await batch.commit();
-    }
-
-    // 인앱 알림과 별개로, 각 구독자에게 백그라운드 푸시도 보낸다.
-    for (final (recipientUid, matchType, keyword) in matches) {
-      sendPush(
-        recipientUid: recipientUid,
-        type: 'keyword_match',
-        title: title,
-        body: matchType == 'category'
-            ? "구독한 카테고리 '$keyword'에 새 글이 등록됐어요"
-            : "저장한 키워드 '$keyword'와 일치하는 글이 등록됐어요",
-        data: {'itemId': itemId, 'matchType': matchType, 'keyword': keyword},
-      );
-    }
-  }
-
   Future<void> _submit() async {
     // 버튼 비활성화(UI)와 별개로, 리빌드 전에 연속 탭이 두 번 들어와도
     // 같은 글이 두 번 등록되지 않도록 메서드 진입 자체를 막는다.
@@ -329,17 +246,11 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
           category: _selectedCategory,
           type: _selectedType.name,
         );
-        // 키워드 알림 매칭 실패는 게시글 등록 자체를 막을 정도로 치명적이지
-        // 않으므로 조용히 무시한다.
-        try {
-          await _notifyKeywordMatches(
-            itemId: ref.id,
-            title: title,
-            description: description,
-            category: _selectedCategory,
-            posterUid: user.uid,
-          );
-        } catch (_) {}
+        // 키워드·카테고리 구독자 매칭과 알림 발송은 백엔드가 맡는다
+        // (keyword_notifier.dart 참고 — 예전에는 클라이언트가 남의
+        // savedSearches를 전부 읽어야 했다). 실패해도 글은 이미 등록됐으므로
+        // 결과를 기다리지 않는다.
+        unawaited(notifyKeywordMatches(itemId: ref.id));
       }
       if (mounted) Navigator.pop(context);
     } catch (e) {
@@ -357,6 +268,16 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
   }
 
   Future<void> _confirmDiscard() async {
+    // 업로드·등록이 진행 중일 때는 "작성 중인 내용이 저장되지 않습니다"가
+    // 사실과 다르다(이미 저장 중이다). 끝날 때까지 기다리게 안내한다.
+    if (_isSubmitting) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${_isEditing ? '수정' : '등록'}하는 중이에요. 잠시만 기다려주세요.'),
+        ),
+      );
+      return;
+    }
     final confirmed = await showConfirmDialog(
       context,
       title: '나가시겠습니까?',
@@ -391,6 +312,8 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final thumbDecodeSize = (88 * MediaQuery.devicePixelRatioOf(context))
+        .round();
     return PopScope(
       canPop: !_hasUnsavedChanges,
       onPopInvokedWithResult: (didPop, result) {
@@ -447,6 +370,8 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
                           ),
                         ),
                       ),
+                    // 88dp 썸네일 자리에 1600px 원본을 그대로 디코딩하지 않도록
+                    // 표시 크기에 맞춰 디코딩 폭을 제한한다.
                     for (var i = 0; i < _existingImageUrls.length; i++)
                       _ImagePickerTile(
                         key: ValueKey('existing_$i'),
@@ -456,6 +381,8 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
                           width: 88,
                           height: 88,
                           fit: BoxFit.cover,
+                          memCacheWidth: thumbDecodeSize,
+                          memCacheHeight: thumbDecodeSize,
                           errorWidget: (context, url, error) => const Icon(
                             Icons.broken_image_outlined,
                             color: AppColors.inkFaint,
@@ -471,6 +398,7 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
                           width: 88,
                           height: 88,
                           fit: BoxFit.cover,
+                          cacheWidth: thumbDecodeSize,
                         ),
                       ),
                   ],
@@ -491,6 +419,8 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
               const SizedBox(height: 10),
               TextField(
                 controller: _titleController,
+                maxLength: _maxTitleLength,
+                textInputAction: TextInputAction.next,
                 decoration: _fieldDecoration('예: 검은색 백팩, 아이폰 15'),
               ),
               const SizedBox(height: 24),
@@ -526,6 +456,8 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
               TextField(
                 controller: _descriptionController,
                 maxLines: 4,
+                maxLength: _maxDescriptionLength,
+                maxLengthEnforcement: MaxLengthEnforcement.enforced,
                 decoration: _fieldDecoration(
                   '색상, 브랜드, 특징 등 자세히 적어주시면 찾는 데 도움이 돼요.',
                 ),
@@ -569,6 +501,8 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
               const SizedBox(height: 12),
               TextField(
                 controller: _locationDetailController,
+                maxLength: _maxLocationDetailLength,
+                textInputAction: TextInputAction.done,
                 decoration: _fieldDecoration('세부 위치 (예: 1층 북카페 창가 자리)'),
               ),
               const SizedBox(height: 24),
@@ -643,18 +577,30 @@ class _ImagePickerTile extends StatelessWidget {
         fit: StackFit.expand,
         children: [
           child,
+          // 보이는 원은 작지만(20dp) 터치 영역은 투명 여백까지 포함해
+          // 손가락으로 정확히 누를 수 있는 크기로 넓힌다.
           Positioned(
-            top: 4,
-            right: 4,
-            child: GestureDetector(
-              onTap: onRemove,
-              child: Container(
-                padding: const EdgeInsets.all(3),
-                decoration: const BoxDecoration(
-                  color: Colors.black54,
-                  shape: BoxShape.circle,
+            top: 0,
+            right: 0,
+            child: Semantics(
+              button: true,
+              label: '사진 삭제',
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: onRemove,
+                child: const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      shape: BoxShape.circle,
+                    ),
+                    child: Padding(
+                      padding: EdgeInsets.all(3),
+                      child: Icon(Icons.close, color: Colors.white, size: 14),
+                    ),
+                  ),
                 ),
-                child: const Icon(Icons.close, color: Colors.white, size: 14),
               ),
             ),
           ),

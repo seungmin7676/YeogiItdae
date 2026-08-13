@@ -1,5 +1,6 @@
 const nodemailer = require('nodemailer');
 const { initAdmin, setCors, requireUser, ALLOWED_EMAIL_DOMAIN } = require('../_lib');
+const { checkWithdrawalCooldown } = require('../_withdrawal');
 
 const RESEND_COOLDOWN_MS = 60 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
@@ -20,6 +21,30 @@ module.exports = async (req, res) => {
   const email = decoded.email;
   if (!email || !email.toLowerCase().endsWith(ALLOWED_EMAIL_DOMAIN)) {
     return res.status(403).json({ error: 'domain-not-allowed' });
+  }
+
+  // 탈퇴 후 재가입 제한. 여기가 실제 관문이다 — 가입 화면의 사전 확인
+  // (signup-eligibility)을 건너뛰고 Auth 계정을 만들어도, 인증 코드를 못 받으면
+  // 규칙상(isVerifiedHallymUser) 아무것도 할 수 없다.
+  //
+  // 이미 인증을 마친 계정은 검사하지 않는다. 제한은 "탈퇴한 명의로 새로 만든
+  // 계정"에만 걸려야 하고, 인증까지 끝난 계정이 그 상태가 될 일은 없다.
+  if (decoded.email_verified !== true) {
+    const { blocked, daysLeft } = await checkWithdrawalCooldown(admin, email);
+    if (blocked) {
+      // 막을 거면 방금 만들어진 계정도 되돌린다. 그대로 두면 그 이메일이
+      // 인증도 못 하고 재가입도 못 하는 껍데기 계정에 묶여버린다.
+      // 가입 과정에서 먼저 쓰인 프로필 문서도 함께 정리한다.
+      await Promise.all([
+        admin.firestore().collection('userPublicProfiles').doc(decoded.uid).delete(),
+        admin.firestore().collection('userPrivate').doc(decoded.uid).delete(),
+      ]).catch((e) => console.error('[send-code] 롤백 정리 실패:', e.message));
+      await admin
+        .auth()
+        .deleteUser(decoded.uid)
+        .catch((e) => console.error('[send-code] 롤백 계정 삭제 실패:', e.message));
+      return res.status(403).json({ error: 'withdrawn-cooldown', daysLeft });
+    }
   }
 
   const db = admin.firestore();

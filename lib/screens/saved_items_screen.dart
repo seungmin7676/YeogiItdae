@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../models/lost_found_item.dart';
+import '../services/error_messages.dart';
 import '../theme/app_theme.dart';
 import '../widgets/feed_message.dart';
 import '../widgets/item_card.dart';
@@ -39,6 +40,24 @@ class _SavedItemsScreenState extends State<SavedItemsScreen> {
       _itemsFuture = null;
       _fetchedForIds = null;
     });
+  }
+
+  /// 당겨서 새로고침. 오프라인이면 서버 조회가 예외를 던지는데 그대로 두면
+  /// 처리되지 않은 비동기 예외가 되고 사용자에게는 아무 설명도 남지 않는다.
+  /// 실패해도 캐시 기준으로는 다시 그려주고 이유를 안내한다.
+  Future<void> _refresh(String? uid) async {
+    try {
+      await FirebaseFirestore.instance
+          .collection('bookmarks')
+          .doc(uid ?? '_')
+          .get(const GetOptions(source: Source.server));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('새로고침하지 못했어요: ${friendlyErrorMessage(e)}')),
+      );
+    }
+    if (mounted) _refetch();
   }
 
   // Firestore의 whereIn은 한 번에 최대 10개까지만 지원하므로 10개씩 나눠 조회한다.
@@ -141,13 +160,7 @@ class _SavedItemsScreenState extends State<SavedItemsScreen> {
               }
               return RefreshIndicator(
                 color: AppColors.primary,
-                onRefresh: () async {
-                  await FirebaseFirestore.instance
-                      .collection('bookmarks')
-                      .doc(uid ?? '_')
-                      .get(const GetOptions(source: Source.server));
-                  _refetch();
-                },
+                onRefresh: () => _refresh(uid),
                 child: ListView.separated(
                   padding: const EdgeInsets.only(bottom: 32),
                   itemCount: items.length,

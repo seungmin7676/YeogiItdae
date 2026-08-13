@@ -28,7 +28,7 @@ class ItemCard extends StatelessWidget {
 
   static const double _thumbSize = 96;
 
-  Widget _thumbnail() {
+  Widget _thumbnail(BuildContext context) {
     Widget placeholder(IconData icon) => Container(
       width: _thumbSize,
       height: _thumbSize,
@@ -36,6 +36,12 @@ class ItemCard extends StatelessWidget {
       alignment: Alignment.center,
       child: Icon(icon, color: AppColors.inkFaint, size: 26),
     );
+    // 업로드 원본은 최대 1600px인데 이 자리는 96dp짜리 썸네일이다. 디코딩
+    // 크기를 실제 표시 크기(논리 픽셀 × 화면 배율)로 제한하지 않으면 목록의
+    // 행마다 원본 해상도 비트맵이 메모리에 올라가, 스크롤이 길어질수록
+    // 이미지 캐시가 급격히 커진다.
+    final decodeSize = (_thumbSize * MediaQuery.devicePixelRatioOf(context))
+        .round();
     return Container(
       width: _thumbSize,
       height: _thumbSize,
@@ -50,6 +56,8 @@ class ItemCard extends StatelessWidget {
               width: _thumbSize,
               height: _thumbSize,
               fit: BoxFit.cover,
+              memCacheWidth: decodeSize,
+              memCacheHeight: decodeSize,
               placeholder: (context, url) => placeholder(Icons.image_outlined),
               errorWidget: (context, url, error) =>
                   placeholder(Icons.broken_image_outlined),
@@ -66,117 +74,125 @@ class ItemCard extends StatelessWidget {
       if (item.createdAt != null) relativeTime(item.createdAt),
       if (item.viewCount > 0) '조회 ${item.viewCount}',
     ];
-    return Material(
-      color: selected ? AppColors.primaryMuted : Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        onLongPress: onLongPress,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: kPagePadding,
-            vertical: 14,
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Opacity(opacity: item.resolved ? 0.5 : 1.0, child: _thumbnail()),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Opacity(
-                  opacity: item.resolved ? 0.55 : 1.0,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Wrap(
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        spacing: 8,
-                        runSpacing: 4,
-                        children: [
-                          StatusBadge(type: item.type),
-                          Text(
-                            item.category,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.inkMuted,
-                              fontWeight: FontWeight.w600,
+    // 다중 선택 모드에서 선택 여부는 배경색과 동그라미 체크로만 보여지므로,
+    // 스크린 리더에도 선택 상태를 함께 알린다.
+    return Semantics(
+      selected: selectionMode ? selected : null,
+      child: Material(
+        color: selected ? AppColors.primaryMuted : Colors.transparent,
+        child: InkWell(
+          onTap: onTap,
+          onLongPress: onLongPress,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: kPagePadding,
+              vertical: 14,
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Opacity(
+                  opacity: item.resolved ? 0.5 : 1.0,
+                  child: _thumbnail(context),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Opacity(
+                    opacity: item.resolved ? 0.55 : 1.0,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Wrap(
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          spacing: 8,
+                          runSpacing: 4,
+                          children: [
+                            StatusBadge(type: item.type),
+                            Text(
+                              item.category,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: AppColors.inkMuted,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
+                            if (item.resolved)
+                              const SoftBadge(
+                                label: '거래완료',
+                                color: AppColors.inkMuted,
+                              ),
+                            if (item.viewCount >= kPopularViewThreshold)
+                              const SoftBadge(
+                                label: '인기',
+                                color: AppColors.primary,
+                              ),
+                            if (item.isHidden)
+                              const SoftBadge(
+                                label: '숨김',
+                                color: AppColors.danger,
+                              ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          item.title,
+                          style: const TextStyle(
+                            fontSize: 15.5,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.ink,
+                            letterSpacing: -0.3,
+                            height: 1.3,
                           ),
-                          if (item.resolved)
-                            const SoftBadge(
-                              label: '거래완료',
-                              color: AppColors.inkMuted,
-                            ),
-                          if (item.viewCount >= kPopularViewThreshold)
-                            const SoftBadge(
-                              label: '인기',
-                              color: AppColors.primary,
-                            ),
-                          if (item.isHidden)
-                            const SoftBadge(
-                              label: '숨김',
-                              color: AppColors.danger,
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        item.title,
-                        style: const TextStyle(
-                          fontSize: 15.5,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.ink,
-                          letterSpacing: -0.3,
-                          height: 1.3,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
                         ),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        metaParts.join(' · '),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 12.5,
-                          color: AppColors.inkFaint,
-                          fontWeight: FontWeight.w500,
+                        const SizedBox(height: 6),
+                        Text(
+                          metaParts.join(' · '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 12.5,
+                            color: AppColors.inkFaint,
+                            fontWeight: FontWeight.w500,
+                          ),
                         ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              if (selectionMode) ...[
-                const SizedBox(width: 12),
-                Padding(
-                  padding: const EdgeInsets.only(top: 36),
-                  child: AnimatedContainer(
-                    duration: kMotionFast,
-                    width: 22,
-                    height: 22,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: selected ? AppColors.primary : AppColors.surface,
-                      border: Border.all(
-                        color: selected
-                            ? AppColors.primary
-                            : AppColors.lineStrong,
-                        width: 1.5,
-                      ),
+                      ],
                     ),
-                    child: selected
-                        ? const Icon(
-                            Icons.check_rounded,
-                            size: 15,
-                            color: Colors.white,
-                          )
-                        : null,
                   ),
                 ),
+                if (selectionMode) ...[
+                  const SizedBox(width: 12),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 36),
+                    child: AnimatedContainer(
+                      duration: kMotionFast,
+                      width: 22,
+                      height: 22,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: selected ? AppColors.primary : AppColors.surface,
+                        border: Border.all(
+                          color: selected
+                              ? AppColors.primary
+                              : AppColors.lineStrong,
+                          width: 1.5,
+                        ),
+                      ),
+                      child: selected
+                          ? const Icon(
+                              Icons.check_rounded,
+                              size: 15,
+                              color: Colors.white,
+                            )
+                          : null,
+                    ),
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),

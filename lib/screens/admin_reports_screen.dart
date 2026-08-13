@@ -90,7 +90,8 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
   ) {
     final order = <String>[];
-    final byItem = <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
+    final byItem =
+        <String, List<QueryDocumentSnapshot<Map<String, dynamic>>>>{};
     for (final doc in docs) {
       final itemId = doc.data()['itemId'] as String?;
       if (itemId == null) continue;
@@ -100,9 +101,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
       }
       byItem[itemId]!.add(doc);
     }
-    return [
-      for (final itemId in order) _ReportGroup(itemId, byItem[itemId]!),
-    ];
+    return [for (final itemId in order) _ReportGroup(itemId, byItem[itemId]!)];
   }
 
   Future<void> _openItem(String itemId) async {
@@ -110,9 +109,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     final doc = await itemsCollection.doc(itemId).get();
     if (!mounted) return;
     if (!doc.exists) {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('이미 삭제된 게시글입니다.')),
-      );
+      messenger.showSnackBar(const SnackBar(content: Text('이미 삭제된 게시글입니다.')));
       return;
     }
     showItemDetailSheet(context, LostFoundItem.fromDoc(doc));
@@ -122,7 +119,8 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     final confirmed = await showConfirmDialog(
       context,
       title: '게시글 숨김',
-      content: "'${group.itemTitle}' 게시글을 숨김 처리할까요?\n피드에서 보이지 않게 되며, 나중에 되돌릴 수 있어요.",
+      content:
+          "'${group.itemTitle}' 게시글을 숨김 처리할까요?\n피드에서 보이지 않게 되며, 나중에 되돌릴 수 있어요.",
       confirmLabel: '숨김',
       danger: true,
     );
@@ -170,15 +168,19 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     final confirmed = await showConfirmDialog(
       context,
       title: '신고 반려',
-      content: "'${group.itemTitle}' 신고를 반려할까요?\n게시글은 그대로 유지되고, 이 신고는 큐에서 사라져요.",
+      content:
+          "'${group.itemTitle}' 신고를 반려할까요?\n게시글은 그대로 유지되고, 이 신고는 큐에서 사라져요.",
       confirmLabel: '반려',
     );
     if (!confirmed) return;
     await _run(group, () async {
       final batch = FirebaseFirestore.instance.batch();
       batch.update(itemsCollection.doc(group.itemId), {'reportCount': 0});
+      // 반려도 하나의 조치이므로 신고자에게 검토 완료를 알린다(게시글은 유지).
+      _notifyReporters(batch, group);
       _clearReports(batch, group);
       await batch.commit();
+      _pushReporters(group);
     }, successMessage: '신고를 반려했어요.');
   }
 
@@ -245,7 +247,7 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     }
   }
 
-  /// 처리 결과를 작성자와 신고자들에게 백그라운드 푸시로도 알린다.
+  /// 작성자에게 처리 결과 푸시를 보내고, 신고자들에게도 검토 완료 푸시를 보낸다.
   void _pushModeration(
     _ReportGroup group, {
     required String authorType,
@@ -260,13 +262,18 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
         data: {'itemId': group.itemId},
       );
     }
+    _pushReporters(group);
+  }
+
+  /// 신고자들에게 "검토가 완료됐다"는 푸시를 보낸다(숨김·삭제·반려 공통).
+  void _pushReporters(_ReportGroup group) {
     for (final reporterUid in group.reporterUids.toSet()) {
       if (reporterUid.isEmpty) continue;
       sendPush(
         recipientUid: reporterUid,
         type: 'report_result',
-        title: '신고 처리 완료',
-        body: "신고해주신 '${group.itemTitle}' 게시글이 처리됐어요",
+        title: '신고 검토 완료',
+        body: "신고해주신 '${group.itemTitle}' 게시글 검토가 완료됐어요",
         data: {'itemId': group.itemId},
       );
     }

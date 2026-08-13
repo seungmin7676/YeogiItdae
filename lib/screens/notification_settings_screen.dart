@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../services/error_messages.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/app_user_data.dart';
@@ -51,10 +52,26 @@ const List<_NotificationTypeOption> _kNotificationTypes = [
 class NotificationSettingsScreen extends StatelessWidget {
   const NotificationSettingsScreen({super.key});
 
-  Future<void> _setPreference(String uid, String field, bool value) async {
-    await FirebaseFirestore.instance.collection('userSettings').doc(uid).set({
-      field: value,
-    }, SetOptions(merge: true));
+  /// 스위치를 바꾸면 곧바로 Firestore에 쓴다. 실패(오프라인·권한)를 그냥
+  /// 두면 처리되지 않은 비동기 예외가 되고, 화면의 스위치는 AppUserData가
+  /// 내려주는 서버 값을 그대로 그리므로 조용히 원래 자리로 되돌아가 사용자는
+  /// "왜 안 바뀌지?"만 겪게 된다. 실패 이유를 반드시 알려준다.
+  Future<void> _setPreference(
+    BuildContext context,
+    String uid,
+    String field,
+    bool value,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await FirebaseFirestore.instance.collection('userSettings').doc(uid).set({
+        field: value,
+      }, SetOptions(merge: true));
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('알림 설정을 저장하지 못했어요: ${friendlyErrorMessage(e)}')),
+      );
+    }
   }
 
   @override
@@ -99,7 +116,12 @@ class NotificationSettingsScreen extends StatelessWidget {
                       value: settings[option.field] as bool? ?? true,
                       onChanged: uid == null
                           ? null
-                          : (value) => _setPreference(uid, option.field, value),
+                          : (value) => _setPreference(
+                              context,
+                              uid,
+                              option.field,
+                              value,
+                            ),
                     ),
                 ],
               ),

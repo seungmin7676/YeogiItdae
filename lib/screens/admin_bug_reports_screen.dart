@@ -27,9 +27,7 @@ class _AdminBugReportsScreenState extends State<AdminBugReportsScreen> {
   CollectionReference<Map<String, dynamic>> get _bugReports =>
       FirebaseFirestore.instance.collection('bugReports');
 
-  Future<void> _resolve(
-    QueryDocumentSnapshot<Map<String, dynamic>> doc,
-  ) async {
+  Future<void> _resolve(QueryDocumentSnapshot<Map<String, dynamic>> doc) async {
     final confirmed = await showConfirmDialog(
       context,
       title: '처리 완료',

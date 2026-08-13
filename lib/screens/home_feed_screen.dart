@@ -4,8 +4,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../models/lost_found_item.dart';
+import '../services/error_messages.dart';
 import '../services/item_queries.dart';
 import '../services/recent_search_service.dart';
+import '../services/search_tokens.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/app_user_data.dart';
@@ -134,36 +136,49 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
   }
 
   /// 서버 쿼리로 거를 수 없는 조건만 클라이언트에서 마저 거른다.
-  /// 종류·카테고리·장소는 Firestore 쿼리에서 이미 걸러져 들어온다
-  /// (예전에는 여기서 걸렀는데, limit으로 가져온 20개 안에서만 필터가
-  /// 적용돼 필터를 켜면 결과가 몇 개 안 나오는 문제가 있었다).
-  /// 숨김 글·차단 사용자·본문 검색은 Firestore가 지원하지 않거나(부분 문자열
-  /// 검색) 사용자마다 기준이 달라(차단 목록) 서버로 내릴 수 없다.
+  ///
+  /// 숨김 글과 차단 사용자는 사용자마다 기준이 달라 서버로 내릴 수 없다.
+  /// 검색어는 서버가 2-gram 토큰으로 후보를 좁혀 보내주므로(search_tokens.dart)
+  /// 여기서는 실제로 검색어를 포함하는지 최종 판정만 한다. 검색 모드에서는
+  /// 종류·카테고리·장소도 여기서 적용한다(buildFeedQuery 주석 참고).
   List<LostFoundItem> _applySearch(
     List<LostFoundItem> items,
     Set<String> blockedUids,
   ) {
-    final result = items
-        .where(
-          (item) => !item.isHidden && !blockedUids.contains(item.authorUid),
-        )
-        .toList();
-    final query = _searchQuery.trim().toLowerCase();
-    if (query.isEmpty) return result;
-    return result
-        .where(
-          (item) =>
-              item.title.toLowerCase().contains(query) ||
-              item.description.toLowerCase().contains(query),
-        )
-        .toList();
+    final query = _searchQuery.trim();
+    final searching = query.isNotEmpty;
+    return items.where((item) {
+      if (item.isHidden || blockedUids.contains(item.authorUid)) return false;
+      if (!searching) return true;
+      if (!matchesSearchQuery(
+        query,
+        title: item.title,
+        description: item.description,
+      )) {
+        return false;
+      }
+      // 검색 모드에서는 서버가 토큰만 걸러주므로 나머지 필터를 여기서 적용한다.
+      if (_selectedFilter == 1 && item.type != ItemType.found) return false;
+      if (_selectedFilter == 2 && item.type != ItemType.lost) return false;
+      if (_selectedCategory != '전체' && item.category != _selectedCategory) {
+        return false;
+      }
+      if (_selectedLocation != _kAllLocations &&
+          item.location != _selectedLocation) {
+        return false;
+      }
+      return true;
+    }).toList();
   }
+
+  /// 검색어가 두 글자 이상이면 서버에서 2-gram 토큰으로 후보를 좁힌다.
+  /// 한 글자면 후보를 좁히는 의미가 없어(거의 모든 글에 걸린다) 토큰 없이
+  /// 불러온 목록 안에서만 거른다.
+  String? get _searchToken => searchTokenFor(_searchQuery.trim());
 
   // 검색 중이라도 항상 페이지네이션 limit을 적용한다. 예전에는 검색어가
   // 있으면 limit을 아예 없애 전체 컬렉션을 매번 구독했는데, 게시글이
   // 늘어날수록 검색할 때마다 읽기 비용이 무한정 커지는 문제가 있었다.
-  // 대신 현재 페이지에서 못 찾으면 "더 보기"로 다음 페이지를 불러와
-  // 계속 찾을 수 있게 한다.
   Query<Map<String, dynamic>> get _filteredQuery => buildFeedQuery(
     collection: itemsCollection,
     typeFilter: _selectedFilter,
@@ -171,6 +186,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
     location: _selectedLocation,
     sortByPopular: _sortByPopular,
     limit: _limit,
+    searchToken: _searchToken,
   );
 
   // 카테고리 칩 개수는 페이지네이션과 무관하게 현재 필터(종류·장소) 전체를
@@ -188,6 +204,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
       title: '장소 선택',
       options: kLocations,
       leadingLabel: _kAllLocations,
+      leadingIcon: Icons.select_all_rounded,
     );
     if (result != null) {
       setState(() {
@@ -213,11 +230,39 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
     showItemDetailSheet(context, item);
   }
 
+  /// 종류·카테고리·장소 필터를 모두 초기 상태로 되돌린다(검색어는 유지).
+  void _clearFilters() {
+    setState(() {
+      _selectedFilter = 0;
+      _selectedCategory = '전체';
+      _selectedLocation = _kAllLocations;
+      _resetPaging();
+    });
+    _refreshCategoryCounts();
+  }
+
   void _loadNextPage() {
+    if (_isLoadingMore) return;
     setState(() {
       _isLoadingMore = true;
       _limit += kLoadMoreStep;
     });
+  }
+
+  /// 당겨서 새로고침. 오프라인이면 `get(Source.server)`가 예외를 던지는데,
+  /// RefreshIndicator는 이 Future의 에러를 잡아주지 않아 그대로 처리되지 않은
+  /// 비동기 예외가 되어(릴리스에서는 Crashlytics에 크래시로 기록된다) 사용자
+  /// 에게는 아무 설명도 남지 않는다. 실패를 삼키지 말고 안내로 바꿔준다.
+  Future<void> _refresh() async {
+    _refreshCategoryCounts();
+    try {
+      await _filteredQuery.get(const GetOptions(source: Source.server));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('새로고침하지 못했어요: ${friendlyErrorMessage(e)}')),
+      );
+    }
   }
 
   @override
@@ -269,7 +314,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
               _searchController.text.isEmpty &&
               _recentSearches.isNotEmpty)
             SizedBox(
-              height: 38,
+              height: scaledControlHeight(context, 38),
               child: ListView.separated(
                 scrollDirection: Axis.horizontal,
                 padding: const EdgeInsets.fromLTRB(
@@ -342,7 +387,11 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
                   return const ItemListSkeleton();
                 }
 
-                if (_isLoadingMore) {
+                if (shouldFinishPageLoad(
+                  isLoadingMore: _isLoadingMore,
+                  hasLiveSnapshot:
+                      snapshot.connectionState == ConnectionState.active,
+                )) {
                   WidgetsBinding.instance.addPostFrameCallback((_) {
                     if (mounted) setState(() => _isLoadingMore = false);
                   });
@@ -353,10 +402,14 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
                   docs,
                 ).where((item) => !item.isHidden).toList();
                 final items = _applySearch(visibleItems, blockedUids);
-                // 받은 문서 수가 요청한 개수(limit)와 같으면 더 남아있을 가능성이 있다고 본다.
-                // 검색 중에도 마찬가지다 — 현재 페이지에는 없어도 더 오래된 페이지에
-                // 일치하는 글이 있을 수 있으므로 "더 보기"로 계속 찾을 수 있게 한다.
-                final canLoadMore = docs.length == _limit;
+                // 검색 중에도 페이지네이션은 그대로 적용된다 — 현재 페이지에
+                // 없어도 더 오래된 페이지에 일치하는 글이 있을 수 있으므로
+                // "더 보기"로 계속 찾을 수 있게 한다.
+                final canLoadMore = shouldShowLoadMore(
+                  loadedCount: docs.length,
+                  limit: _limit,
+                  isLoadingMore: _isLoadingMore,
+                );
 
                 if (items.isEmpty && canLoadMore) {
                   return FeedMessage(
@@ -364,7 +417,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
                     title: '아직 찾지 못했어요',
                     text: '지금까지 불러온 글에는 일치하는 결과가 없어요.\n더 불러와서 계속 찾아볼 수 있어요.',
                     actionLabel: _isLoadingMore ? '불러오는 중…' : '더 불러오기',
-                    onAction: _isLoadingMore ? () {} : _loadNextPage,
+                    onAction: _loadNextPage,
                   );
                 }
 
@@ -375,6 +428,17 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
                       _selectedLocation != _kAllLocations ||
                       _selectedFilter != 0;
                   if (isSearching) {
+                    // 검색과 필터를 함께 걸어 0건이 된 경우, 진짜로 없는
+                    // 것인지 필터 탓인지 알 수 없으므로 해제할 길을 준다.
+                    if (hasFilter) {
+                      return FeedMessage(
+                        icon: Icons.search_off_rounded,
+                        title: '조건에 맞는 검색 결과가 없어요',
+                        text: '필터를 해제하면 더 많은 결과를 볼 수 있어요.',
+                        actionLabel: '필터 해제하고 검색',
+                        onAction: _clearFilters,
+                      );
+                    }
                     return const FeedMessage(
                       icon: Icons.search_off_rounded,
                       title: '검색 결과가 없어요',
@@ -387,15 +451,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
                       title: '조건에 맞는 글이 없어요',
                       text: '필터를 바꾸거나 해제하면 더 많은 글을 볼 수 있어요.',
                       actionLabel: '필터 모두 해제',
-                      onAction: () {
-                        setState(() {
-                          _selectedFilter = 0;
-                          _selectedCategory = '전체';
-                          _selectedLocation = _kAllLocations;
-                          _resetPaging();
-                        });
-                        _refreshCategoryCounts();
-                      },
+                      onAction: _clearFilters,
                     );
                   }
                   return FeedMessage(
@@ -409,12 +465,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
 
                 return RefreshIndicator(
                   color: AppColors.primary,
-                  onRefresh: () async {
-                    _refreshCategoryCounts();
-                    await _filteredQuery.get(
-                      const GetOptions(source: Source.server),
-                    );
-                  },
+                  onRefresh: _refresh,
                   child: ListView.separated(
                     padding: const EdgeInsets.only(bottom: 100),
                     itemCount: items.length + (canLoadMore ? 1 : 0),
@@ -457,7 +508,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
     final totalCount = categoryCounts.values.fold(0, (a, b) => a + b);
     final locationActive = _selectedLocation != _kAllLocations;
     return SizedBox(
-      height: 36,
+      height: scaledControlHeight(context, 36),
       child: ListView(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: kPagePadding),

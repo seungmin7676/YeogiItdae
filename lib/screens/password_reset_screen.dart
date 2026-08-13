@@ -202,9 +202,13 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
         });
       }
     } on BackendException catch (e) {
-      setState(() => _codeErrorText = _verifyErrorMessage(e.code));
+      // 응답을 기다리는 사이 화면을 닫았을 수 있다(뒤로 가기). mounted를
+      // 확인하지 않으면 dispose 이후 setState로 예외가 난다.
+      if (mounted) setState(() => _codeErrorText = _verifyErrorMessage(e.code));
     } catch (e) {
-      setState(() => _codeErrorText = '인증에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      if (mounted) {
+        setState(() => _codeErrorText = '인증에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      }
     } finally {
       if (mounted) setState(() => _isVerifyingCode = false);
     }
@@ -219,6 +223,9 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
     }
 
     setState(() => _isSubmitting = true);
+    // 성공하면 이 화면을 닫으면서 안내를 띄운다. pop 이후에는 이 화면의
+    // context로 ScaffoldMessenger를 찾을 수 없으므로 미리 잡아둔다.
+    final messenger = ScaffoldMessenger.of(context);
     try {
       await _callBackend('/api/reset-password', {
         'email': _emailController.text.trim(),
@@ -227,7 +234,7 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
       });
       if (mounted) {
         Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.showSnackBar(
           const SnackBar(content: Text('비밀번호가 변경되었습니다. 새 비밀번호로 로그인해주세요.')),
         );
       }
