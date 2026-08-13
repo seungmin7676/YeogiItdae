@@ -492,6 +492,143 @@ test('items: 관리자는 신고 검토 결과로 남의 글도 삭제할 수 �
   await assertSucceeds(deleteDoc(doc(db, 'items', itemId)));
 });
 
+// ---------------------------------------------------------------------------
+// savedSearches — 예전에는 글 등록 시 클라이언트가 전체를 훑어 매칭하느라
+// 모든 로그인 사용자에게 읽기가 열려 있었다(= 남의 저장 키워드가 uid와 함께
+// 노출). 매칭을 백엔드로 옮기면서 본인만 읽도록 잠갔다.
+// ---------------------------------------------------------------------------
+
+test('savedSearches: 본인 구독 목록은 읽고 쓸 수 있다', async () => {
+  const db = hallymUser('alice').firestore();
+  await assertSucceeds(
+    setDoc(doc(db, 'savedSearches', 'alice'), { keywords: ['지갑'], categories: [] }),
+  );
+  await assertSucceeds(getDoc(doc(db, 'savedSearches', 'alice')));
+});
+
+test('savedSearches: 다른 사람의 저장 키워드는 읽을 수 없다', async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), 'savedSearches', 'bob'), {
+      keywords: ['지갑'],
+      categories: [],
+    });
+  });
+  const db = hallymUser('alice').firestore();
+  await assertFails(getDoc(doc(db, 'savedSearches', 'bob')));
+});
+
+test('savedSearches: 전체 목록을 훑는 쿼리도 막힌다', async () => {
+  const db = hallymUser('alice').firestore();
+  await assertFails(getDocs(collection(db, 'savedSearches')));
+});
+
+test('savedSearches: 다른 사람의 구독 목록에 쓸 수 없다', async () => {
+  const db = hallymUser('alice').firestore();
+  await assertFails(
+    setDoc(doc(db, 'savedSearches', 'bob'), { keywords: ['가짜'], categories: [] }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// withdrawnUsers — 탈퇴 후 재가입 제한 기록. 클라이언트가 쓸 수 있으면
+// 스스로 제한을 지우고 재가입할 수 있으므로 읽기·쓰기 모두 막는다.
+// ---------------------------------------------------------------------------
+
+test('withdrawnUsers: 로그인 사용자도 읽거나 지울 수 없다', async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), 'withdrawnUsers', 'somehash'), {
+      reregisterAllowedAt: new Date(),
+    });
+  });
+  const db = hallymUser('alice').firestore();
+  await assertFails(getDoc(doc(db, 'withdrawnUsers', 'somehash')));
+  await assertFails(deleteDoc(doc(db, 'withdrawnUsers', 'somehash')));
+});
+
+test('withdrawnUsers: 관리자도 클라이언트에서는 손댈 수 없다(백엔드 전용)', async () => {
+  const db = adminUser().firestore();
+  await assertFails(
+    setDoc(doc(db, 'withdrawnUsers', 'somehash'), { reregisterAllowedAt: new Date() }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// notifications 종류 제한 — 예전에는 종류를 안 봐서 아무나 임의 사용자에게
+// 가짜 '신고 검토 결과' 같은 알림을 만들 수 있었다.
+// ---------------------------------------------------------------------------
+
+test('notifications: 일반 사용자는 keyword_match 알림을 만들 수 없다(백엔드 전용)', async () => {
+  const db = hallymUser('alice').firestore();
+  await assertFails(
+    addDoc(collection(db, 'notifications'), {
+      recipientUid: 'bob',
+      senderUid: 'alice',
+      type: 'keyword_match',
+      read: false,
+    }),
+  );
+});
+
+test('notifications: 일반 사용자는 가짜 신고 처리 알림을 만들 수 없다', async () => {
+  const db = hallymUser('alice').firestore();
+  for (const type of ['report_result', 'item_hidden', 'item_removed']) {
+    await assertFails(
+      addDoc(collection(db, 'notifications'), {
+        recipientUid: 'bob',
+        senderUid: 'alice',
+        type,
+        read: false,
+      }),
+    );
+  }
+});
+
+test('notifications: 관리자는 신고 처리 결과 알림을 만들 수 있다', async () => {
+  const db = adminUser().firestore();
+  for (const type of ['report_result', 'item_hidden', 'item_removed']) {
+    await assertSucceeds(
+      addDoc(collection(db, 'notifications'), {
+        recipientUid: 'bob',
+        senderUid: 'admin',
+        type,
+        read: false,
+      }),
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
+// items.searchTokens — 서버 검색용 2-gram 배열.
+// ---------------------------------------------------------------------------
+
+test('items: searchTokens 배열을 담아 글을 등록할 수 있다', async () => {
+  const db = hallymUser('alice').firestore();
+  await assertSucceeds(
+    addDoc(
+      collection(db, 'items'),
+      validItem('alice', { searchTokens: ['검은', '은색'] }),
+    ),
+  );
+});
+
+test('items: searchTokens가 배열이 아니면 거부된다', async () => {
+  const db = hallymUser('alice').firestore();
+  await assertFails(
+    addDoc(collection(db, 'items'), validItem('alice', { searchTokens: '검은색' })),
+  );
+});
+
+test('items: 수정할 때도 searchTokens 타입을 검증한다', async () => {
+  const itemId = await seedItem('alice');
+  const db = hallymUser('alice').firestore();
+  await assertSucceeds(
+    updateDoc(doc(db, 'items', itemId), { title: '새 제목', searchTokens: ['새제'] }),
+  );
+  await assertFails(
+    updateDoc(doc(db, 'items', itemId), { title: '새 제목', searchTokens: 123 }),
+  );
+});
+
 test('reports: 관리자는 신고 문서를 읽고 삭제할 수 있다', async () => {
   const itemId = await seedItem('alice');
   await testEnv.withSecurityRulesDisabled(async (ctx) => {

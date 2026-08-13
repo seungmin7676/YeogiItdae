@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/bulk_item_actions.dart';
+import '../services/error_messages.dart';
 import '../services/item_queries.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
@@ -24,9 +25,33 @@ class MyPostsScreen extends StatefulWidget {
 
 class _MyPostsScreenState extends State<MyPostsScreen> {
   int _limit = kInitialPageLimit;
+  bool _isLoadingMore = false;
 
   /// 필터·정렬이 바뀌면 이전 기준으로 늘려둔 개수를 처음으로 되돌린다.
-  void _resetPaging() => _limit = kInitialPageLimit;
+  void _resetPaging() {
+    _limit = kInitialPageLimit;
+    _isLoadingMore = false;
+  }
+
+  void _loadNextPage() {
+    if (_isLoadingMore) return;
+    setState(() {
+      _isLoadingMore = true;
+      _limit += kLoadMoreStep;
+    });
+  }
+
+  /// 오프라인 등으로 실패한 새로고침을 처리되지 않은 예외로 남기지 않는다.
+  Future<void> _refresh(String? uid) async {
+    try {
+      await _query(uid).get(const GetOptions(source: Source.server));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('새로고침하지 못했어요: ${friendlyErrorMessage(e)}')),
+      );
+    }
+  }
 
   // 상태 필터: 0 = 전체, 1 = 진행중, 2 = 거래완료
   int _statusFilter = 0;
@@ -35,6 +60,10 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
 
   bool _selectionMode = false;
   final Set<String> _selectedIds = {};
+
+  // 현재 목록에 로드된(화면에 보이는) 글 id들. '모두 선택'이 이 목록을
+  // 기준으로 동작하도록 StreamBuilder가 그릴 때마다 갱신한다.
+  List<String> _visibleIds = const [];
 
   // 일괄 작업(거래완료/삭제)이 진행 중인지. 버튼 연타·중복 다이얼로그로
   // 같은 작업이 두 번 실행되는 것을 UI 계층에서 막는다. (서비스 계층의
@@ -158,7 +187,29 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
               )
             : null,
         actions: _selectionMode
-            ? const []
+            ? [
+                TextButton(
+                  onPressed: _visibleIds.isEmpty
+                      ? null
+                      : () => setState(() {
+                          final allSelected = _visibleIds.every(
+                            _selectedIds.contains,
+                          );
+                          if (allSelected) {
+                            _selectedIds.removeAll(_visibleIds);
+                          } else {
+                            _selectedIds.addAll(_visibleIds);
+                          }
+                        }),
+                  child: Text(
+                    _visibleIds.isNotEmpty &&
+                            _visibleIds.every(_selectedIds.contains)
+                        ? '모두 해제'
+                        : '모두 선택',
+                  ),
+                ),
+                const SizedBox(width: 4),
+              ]
             : [
                 IconButton(
                   icon: const Icon(
@@ -223,9 +274,29 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
                   return const ItemListSkeleton();
                 }
 
+                if (shouldFinishPageLoad(
+                  isLoadingMore: _isLoadingMore,
+                  hasLiveSnapshot:
+                      snapshot.connectionState == ConnectionState.active,
+                )) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) setState(() => _isLoadingMore = false);
+                  });
+                }
+
                 final docs = snapshot.data!.docs;
                 final items = LostFoundItem.fromDocs(docs);
-                final canLoadMore = docs.length == _limit;
+                // '모두 선택'이 참조할 수 있도록 현재 로드된 id들을 갱신한다
+                // (setState 없이 필드만 갱신 — 리빌드를 유발하지 않는다).
+                _visibleIds = [
+                  for (final i in items)
+                    if (i.id != null) i.id!,
+                ];
+                final canLoadMore = shouldShowLoadMore(
+                  loadedCount: docs.length,
+                  limit: _limit,
+                  isLoadingMore: _isLoadingMore,
+                );
                 if (items.isEmpty) {
                   // 상태 필터가 걸려 있으면 "글이 하나도 없는 것"과 "이 상태인
                   // 글만 없는 것"을 구분해서 안내한다.
@@ -257,8 +328,7 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
 
                 return RefreshIndicator(
                   color: AppColors.primary,
-                  onRefresh: () =>
-                      _query(uid).get(const GetOptions(source: Source.server)),
+                  onRefresh: () => _refresh(uid),
                   child: ListView.separated(
                     padding: const EdgeInsets.only(bottom: 32),
                     itemCount: items.length + (canLoadMore ? 1 : 0),
@@ -266,9 +336,8 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
                     itemBuilder: (context, index) {
                       if (index == items.length) {
                         return LoadMoreButton(
-                          isLoading: false,
-                          onPressed: () =>
-                              setState(() => _limit += kLoadMoreStep),
+                          isLoading: _isLoadingMore,
+                          onPressed: _isLoadingMore ? null : _loadNextPage,
                         );
                       }
                       final item = items[index];

@@ -7,11 +7,14 @@ import '../theme/app_theme.dart';
 /// 하나 더 보여준다(예: "전체", "직접 입력"). 그 항목을 선택하면 그대로
 /// [leadingLabel] 문자열이 반환값으로 나오므로, 호출한 쪽에서 의미를
 /// 해석해서 처리하면 된다. 아무것도 선택하지 않고 닫으면 null을 반환한다.
+/// 고정 항목의 뜻은 호출한 쪽마다 다르므로([leadingIcon]) 아이콘도 함께 받는다
+/// — "직접 입력"은 연필, "전체"는 필터 해제처럼 의미가 맞아야 한다.
 Future<String?> showSearchablePickerSheet({
   required BuildContext context,
   required String title,
   required List<String> options,
   String? leadingLabel,
+  IconData leadingIcon = Icons.edit_outlined,
 }) {
   return showModalBottomSheet<String>(
     context: context,
@@ -24,6 +27,7 @@ Future<String?> showSearchablePickerSheet({
       title: title,
       options: options,
       leadingLabel: leadingLabel,
+      leadingIcon: leadingIcon,
     ),
   );
 }
@@ -32,11 +36,13 @@ class _SearchablePickerSheet extends StatefulWidget {
   final String title;
   final List<String> options;
   final String? leadingLabel;
+  final IconData leadingIcon;
 
   const _SearchablePickerSheet({
     required this.title,
     required this.options,
     this.leadingLabel,
+    required this.leadingIcon,
   });
 
   @override
@@ -106,8 +112,8 @@ class _SearchablePickerSheetState extends State<_SearchablePickerSheet> {
                 children: [
                   if (widget.leadingLabel != null) ...[
                     ListTile(
-                      leading: const Icon(
-                        Icons.edit_outlined,
+                      leading: Icon(
+                        widget.leadingIcon,
                         color: AppColors.primary,
                       ),
                       title: Text(

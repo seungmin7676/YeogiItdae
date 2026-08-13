@@ -20,6 +20,9 @@ class UserAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final url = photoUrl;
+    // 프로필 사진 원본(최대 800px)을 34~64dp 원형 안에 그대로 디코딩하면
+    // 채팅 목록처럼 아바타가 여러 개 뜨는 화면에서 메모리가 낭비된다.
+    final decodeSize = (size * MediaQuery.devicePixelRatioOf(context)).round();
     return ClipOval(
       child: Container(
         width: size,
@@ -32,6 +35,8 @@ class UserAvatar extends StatelessWidget {
                 width: size,
                 height: size,
                 fit: BoxFit.cover,
+                memCacheWidth: decodeSize,
+                memCacheHeight: decodeSize,
                 errorWidget: (context, url, error) => _defaultIcon(size),
                 placeholder: (context, url) => _defaultIcon(size),
               )

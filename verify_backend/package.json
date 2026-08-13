@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "test": "firebase emulators:exec --only firestore,auth --project demo-yeogi-itdae \"node --experimental-test-module-mocks --test\" --config ../firebase.json"
+    "_comment": "--test-concurrency=1 은 필수다. 테스트 파일들이 하나의 에뮬레이터를 공유하고 각자 beforeEach에서 DB를 통째로 비우므로, 병렬로 돌면 서로의 데이터를 지워 무작위로 실패한다.",
+    "test": "firebase emulators:exec --only firestore,auth --project demo-yeogi-itdae \"node --experimental-test-module-mocks --test-concurrency=1 --test\" --config ../firebase.json"
   },
   "dependencies": {
     "firebase-admin": "^12.7.0",

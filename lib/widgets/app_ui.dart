@@ -25,7 +25,7 @@ class AppSegmented extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 40,
+      height: scaledControlHeight(context, 40),
       padding: const EdgeInsets.all(3),
       decoration: const BoxDecoration(
         color: AppColors.surfaceAlt,
@@ -57,17 +57,26 @@ class AppSegmented extends StatelessWidget {
                             : Colors.transparent,
                       ),
                     ),
-                    child: Text(
-                      labels[i],
-                      style: TextStyle(
-                        fontSize: 13.5,
-                        letterSpacing: -0.2,
-                        fontWeight: i == selectedIndex
-                            ? FontWeight.w800
-                            : FontWeight.w600,
-                        color: i == selectedIndex
-                            ? AppColors.ink
-                            : AppColors.inkMuted,
+                    // 긴 라벨(예: '분실 · 잃어버렸어요')이 좁은 화면이나 큰
+                    // 글자 배율에서 두 줄로 접혀 트랙 높이를 넘지 않도록
+                    // 한 줄로 고정하고 넘치면 말줄임한다.
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      child: Text(
+                        labels[i],
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 13.5,
+                          letterSpacing: -0.2,
+                          fontWeight: i == selectedIndex
+                              ? FontWeight.w800
+                              : FontWeight.w600,
+                          color: i == selectedIndex
+                              ? AppColors.ink
+                              : AppColors.inkMuted,
+                        ),
                       ),
                     ),
                   ),
@@ -178,7 +187,7 @@ class SegmentedToggle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 36,
+      height: scaledControlHeight(context, 36),
       padding: const EdgeInsets.all(3),
       decoration: BoxDecoration(
         color: AppColors.surfaceAlt,

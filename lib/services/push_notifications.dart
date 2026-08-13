@@ -67,7 +67,10 @@ class PushNotifications {
         >()
         ?.createNotificationChannel(_channel);
 
-    await FirebaseMessaging.instance.requestPermission();
+    // 알림 권한은 여기서 묻지 않는다. 앱을 처음 켠 순간(로그인 화면도 보기
+    // 전)에 시스템 팝업을 띄우면 "이 앱이 왜 알림이 필요한지" 알 수 없어
+    // 거부율이 높고, 한 번 거부하면 설정에서 직접 켜야 한다. 실제로 알림을
+    // 받을 수 있는 상태(이메일 인증까지 끝난 로그인)가 됐을 때 묻는다.
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
     // 포그라운드: 시스템이 알림을 자동 표시하지 않으므로 직접 로컬 알림으로 띄운다.
@@ -82,13 +85,29 @@ class PushNotifications {
       );
     }
 
-    // 로그인 상태가 잡히면 토큰을 등록하고, 토큰 갱신도 반영한다. 이 서비스는
-    // 앱 수명 내내 살아 있으므로 구독을 따로 취소하지 않는다.
-    FirebaseAuth.instance.authStateChanges().listen((user) {
-      if (user != null) registerToken();
+    // 이메일 인증까지 끝난 로그인 상태가 되면 그때 권한을 묻고 토큰을
+    // 등록한다. 계정당 한 번만 하도록 uid를 기억해둔다(userChanges는 프로필
+    // 갱신·토큰 재발급 때도 발생한다). 이 서비스는 앱 수명 내내 살아 있으므로
+    // 구독을 따로 취소하지 않는다.
+    FirebaseAuth.instance.userChanges().listen((user) async {
+      if (user == null || !user.emailVerified) {
+        if (user == null) _permissionCheckedForUid = null;
+        return;
+      }
+      if (_permissionCheckedForUid == user.uid) return;
+      _permissionCheckedForUid = user.uid;
+      try {
+        await FirebaseMessaging.instance.requestPermission();
+      } catch (_) {
+        // 권한 요청 실패(웹·시뮬레이터 등)해도 앱은 계속 동작해야 한다.
+      }
+      await registerToken();
     });
     FirebaseMessaging.instance.onTokenRefresh.listen(_saveToken);
   }
+
+  /// 이번 세션에서 이미 권한을 묻고 토큰을 등록한 계정.
+  static String? _permissionCheckedForUid;
 
   /// 현재 로그인 사용자의 기기 토큰을 fcmTokens/{uid}에 등록한다.
   static Future<void> registerToken() async {

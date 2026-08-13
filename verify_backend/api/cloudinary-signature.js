@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { setCors, requireUser } = require('../_lib');
+const { initAdmin, setCors, requireUser } = require('../_lib');
 
 // 지금까지는 클라이언트가 unsigned upload preset으로 Cloudinary에 직접
 // 업로드했다. unsigned preset은 cloud name/preset 이름만 알면(APK/웹
@@ -13,6 +13,9 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(204).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'method-not-allowed' });
 
+  // requireUser가 admin.auth()를 쓰므로 반드시 먼저 기본 앱을 초기화한다
+  // (다른 엔드포인트와 동일한 순서). 이게 빠져 있어 서명 발급이 401로 실패했다.
+  initAdmin();
   const decoded = await requireUser(req, res);
   if (!decoded) return;
 

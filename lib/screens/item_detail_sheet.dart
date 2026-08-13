@@ -54,6 +54,12 @@ class _ImageGalleryState extends State<_ImageGallery> {
 
   @override
   Widget build(BuildContext context) {
+    // 미리보기는 화면 폭 × 240dp 자리다. 원본(최대 1600px)을 그대로 디코딩할
+    // 필요가 없다(탭해서 여는 전체화면 뷰어는 확대를 위해 원본 그대로 쓴다).
+    final decodeWidth =
+        (MediaQuery.sizeOf(context).width *
+                MediaQuery.devicePixelRatioOf(context))
+            .round();
     return ClipRRect(
       borderRadius: BorderRadius.circular(kRadiusLg),
       child: SizedBox(
@@ -72,6 +78,7 @@ class _ImageGalleryState extends State<_ImageGallery> {
                   width: double.infinity,
                   height: 240,
                   fit: BoxFit.cover,
+                  memCacheWidth: decodeWidth,
                   placeholder: (context, url) => Container(
                     width: double.infinity,
                     height: 240,
@@ -260,11 +267,22 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
   bool _isProcessing = false;
   Timer? _relativeTimeTimer;
 
-  LostFoundItem get item => widget.item;
+  /// 시트를 연 순간의 값으로 시작해서, 게시글 문서가 바뀌면 따라간다.
+  /// 목록에서 넘겨받은 스냅샷만 붙들고 있으면 다른 기기에서 수정·거래완료
+  /// 처리를 하거나 관리자가 숨김·삭제해도 이 시트만 옛 내용을 보여준다.
+  late LostFoundItem _item;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _itemSub;
+
+  /// 삭제·거래완료처럼 이 시트가 스스로 닫는 흐름인지. 아래 구독이 "문서가
+  /// 사라졌다"를 보고 또 pop 하면 화면이 두 번 닫힌다.
+  bool _closingSelf = false;
+
+  LostFoundItem get item => _item;
 
   @override
   void initState() {
     super.initState();
+    _item = widget.item;
     if (item.createdAt != null) {
       // "n분 전" 같은 상대시간 표시가 시트를 오래 열어둬도 계속 최신 상태를
       // 유지하도록 주기적으로 다시 그린다.
@@ -272,11 +290,36 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
         if (mounted) setState(() {});
       });
     }
+
+    final itemId = widget.item.id;
+    if (itemId != null) {
+      _itemSub = itemsCollection.doc(itemId).snapshots().listen(
+        (snap) {
+          if (!mounted || _closingSelf) return;
+          if (!snap.exists) {
+            // 작성자가 다른 기기에서 지웠거나 관리자가 삭제한 경우.
+            Navigator.of(context).pop();
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('삭제된 게시글이에요.')));
+            return;
+          }
+          try {
+            setState(() => _item = LostFoundItem.fromDoc(snap));
+          } catch (_) {
+            // 문서가 손상돼 변환에 실패하면 열 때의 내용을 그대로 유지한다.
+          }
+        },
+        // 읽기 실패는 이미 열려 있는 내용을 그대로 두는 것으로 충분하다.
+        onError: (_) {},
+      );
+    }
   }
 
   @override
   void dispose() {
     _relativeTimeTimer?.cancel();
+    _itemSub?.cancel();
     super.dispose();
   }
 
@@ -494,19 +537,8 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
                       return SizedBox(
                         width: double.infinity,
                         child: ElevatedButton.icon(
-                          onPressed: _isProcessing
-                              ? null
-                              : () => _startChat(context),
-                          icon: _isProcessing
-                              ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.white,
-                                  ),
-                                )
-                              : const Icon(Icons.chat_bubble_outline),
+                          onPressed: () => _startChat(context),
+                          icon: const Icon(Icons.chat_bubble_outline),
                           label: const Text('채팅하기'),
                         ),
                       );
@@ -539,6 +571,29 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
                             style: OutlinedButton.styleFrom(
                               foregroundColor: AppColors.primary,
                               side: const BorderSide(color: AppColors.primary),
+                            ),
+                          )
+                        else
+                          OutlinedButton.icon(
+                            onPressed: _isProcessing
+                                ? null
+                                : () => _unmarkResolved(context),
+                            icon: _isProcessing
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                      color: AppColors.inkMuted,
+                                    ),
+                                  )
+                                : const Icon(Icons.undo_rounded),
+                            label: const Text('거래완료 취소'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: AppColors.inkMuted,
+                              side: const BorderSide(
+                                color: AppColors.lineStrong,
+                              ),
                             ),
                           ),
                         const SizedBox(height: 12),
@@ -697,8 +752,21 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
         body: "'${item.title}' 게시글이 신고됐어요 ($selectedReason)",
         data: {'itemId': item.id ?? ''},
       );
-      messenger.showSnackBar(
-        const SnackBar(content: Text('신고가 접수되었습니다. 관리자가 검토할게요.')),
+      // 스낵바는 상세 시트에 가려 놓치기 쉬워, 접수 완료는 다이얼로그로 확실히
+      // 알려준다.
+      if (!context.mounted) return;
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('신고 완료'),
+          content: const Text('신고가 접수되었습니다.\n관리자 검토 후 조치돼요. 감사합니다.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('확인'),
+            ),
+          ],
+        ),
       );
     } on FirebaseException catch (e) {
       final message = e.code == 'permission-denied'
@@ -710,6 +778,14 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
 
   Future<void> _markResolved(BuildContext context) async {
     if (_isProcessing) return;
+    final confirmed = await showConfirmDialog(
+      context,
+      title: '거래완료 처리',
+      content: '이 게시글을 거래 완료로 처리하시겠습니까?',
+      confirmLabel: '거래완료',
+    );
+    if (!confirmed || !context.mounted || _isProcessing) return;
+
     setState(() => _isProcessing = true);
     final navigator = Navigator.of(context);
     try {
@@ -746,6 +822,50 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
     }
   }
 
+  /// 실수로 거래완료 처리한 경우를 대비해 다시 진행 중 상태로 되돌린다.
+  /// 관련 채팅방의 거래완료 상태 표시도 함께 원복한다.
+  Future<void> _unmarkResolved(BuildContext context) async {
+    if (_isProcessing) return;
+    final confirmed = await showConfirmDialog(
+      context,
+      title: '거래완료 취소',
+      content: '거래완료를 취소하고 다시 진행 중 상태로 되돌릴까요?',
+      confirmLabel: '되돌리기',
+    );
+    if (!confirmed || !context.mounted || _isProcessing) return;
+
+    setState(() => _isProcessing = true);
+    final navigator = Navigator.of(context);
+    try {
+      await itemsCollection.doc(item.id).update({'resolved': false});
+
+      // 거래완료 처리 때 'done'으로 바꿔둔 관련 채팅들의 상태도 'none'으로 되돌린다.
+      final relatedChats = await FirebaseFirestore.instance
+          .collection('chats')
+          .where('participants', arrayContains: item.authorUid)
+          .where('itemId', isEqualTo: item.id)
+          .get();
+      if (relatedChats.docs.isNotEmpty) {
+        final batch = FirebaseFirestore.instance.batch();
+        for (final chatDoc in relatedChats.docs) {
+          batch.set(chatDoc.reference, {
+            'resolutionStatus': 'none',
+          }, SetOptions(merge: true));
+        }
+        await batch.commit();
+      }
+
+      navigator.pop();
+    } catch (e) {
+      if (mounted) setState(() => _isProcessing = false);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('되돌리지 못했습니다: ${friendlyErrorMessage(e)}')),
+        );
+      }
+    }
+  }
+
   void _editItem(BuildContext context) {
     final navigator = Navigator.of(context);
     navigator.pop();
@@ -769,6 +889,9 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
     if (!context.mounted || _isProcessing) return;
 
     setState(() => _isProcessing = true);
+    // 아래에서 문서를 지우면 구독이 "삭제됨"을 보고 또 닫으려 하므로, 이
+    // 흐름이 직접 닫는 중임을 표시해둔다.
+    _closingSelf = true;
     final navigator = Navigator.of(context);
     try {
       // 게시글을 지우기 전에, 이 글로 진행 중이던 채팅방들에 먼저
@@ -795,6 +918,7 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
       await itemsCollection.doc(item.id).delete();
       navigator.pop();
     } catch (e) {
+      _closingSelf = false;
       if (mounted) setState(() => _isProcessing = false);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -805,7 +929,6 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
   }
 
   Future<void> _startChat(BuildContext context) async {
-    if (_isProcessing) return;
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null || item.id == null) return;
 
@@ -916,7 +1039,9 @@ class _DetailRow extends StatelessWidget {
         Icon(icon, size: 17, color: AppColors.inkFaint),
         const SizedBox(width: 10),
         SizedBox(
-          width: 68,
+          // 라벨 열 너비도 글자 배율을 따라 넓어져야 '발견 장소' 같은 라벨이
+          // 시스템 글자 확대에서 잘리지 않는다.
+          width: MediaQuery.textScalerOf(context).scale(68),
           child: Text(
             label,
             style: const TextStyle(
@@ -954,7 +1079,7 @@ class _DetailRow extends StatelessWidget {
   }
 }
 
-/// 신고 누적으로 숨김 처리된 게시글에서 작성자에게 보여주는 이의제기 영역.
+/// 관리자 검토로 숨김 처리된 게시글에서 작성자에게 보여주는 이의제기 영역.
 /// 검토·해제는 클라이언트/자동화 없이 관리자가 Firebase 콘솔에서 직접
 /// reportAppeals 문서를 보고 판단하는 최소 기능이다.
 class _ReportAppealSection extends StatefulWidget {
@@ -984,7 +1109,7 @@ class _ReportAppealSectionState extends State<_ReportAppealSection> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              '신고가 누적되어 이 게시글이 자동으로 숨겨졌어요.\n부당하다고 생각되면 사유를 남겨주세요.',
+              '신고 검토 결과 이 게시글이 숨김 처리됐어요.\n부당하다고 생각되면 사유를 남겨주세요.',
               style: TextStyle(
                 color: AppColors.inkMuted,
                 fontSize: 12.5,
@@ -1080,7 +1205,7 @@ class _ReportAppealSectionState extends State<_ReportAppealSection> {
                   SizedBox(width: 8),
                   Expanded(
                     child: Text(
-                      '신고 누적으로 숨김 처리된 게시글이에요',
+                      '관리자 검토로 숨김 처리된 게시글이에요',
                       style: TextStyle(
                         fontWeight: FontWeight.w700,
                         color: AppColors.danger,

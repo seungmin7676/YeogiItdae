@@ -27,6 +27,15 @@ class AuthorPostsScreen extends StatefulWidget {
 
 class _AuthorPostsScreenState extends State<AuthorPostsScreen> {
   int _limit = kInitialPageLimit;
+  bool _isLoadingMore = false;
+
+  void _loadNextPage() {
+    if (_isLoadingMore) return;
+    setState(() {
+      _isLoadingMore = true;
+      _limit += kLoadMoreStep;
+    });
+  }
 
   Query<Map<String, dynamic>> get _query => itemsCollection
       .where('authorUid', isEqualTo: widget.authorUid)
@@ -54,11 +63,24 @@ class _AuthorPostsScreenState extends State<AuthorPostsScreen> {
             return const ItemListSkeleton();
           }
 
+          if (shouldFinishPageLoad(
+            isLoadingMore: _isLoadingMore,
+            hasLiveSnapshot: snapshot.connectionState == ConnectionState.active,
+          )) {
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) setState(() => _isLoadingMore = false);
+            });
+          }
+
           final docs = snapshot.data!.docs;
           final items = LostFoundItem.fromDocs(
             docs,
           ).where((item) => !item.isHidden).toList();
-          final canLoadMore = docs.length == _limit;
+          final canLoadMore = shouldShowLoadMore(
+            loadedCount: docs.length,
+            limit: _limit,
+            isLoadingMore: _isLoadingMore,
+          );
           if (items.isEmpty) {
             return const FeedMessage(
               icon: Icons.inbox_outlined,
@@ -73,8 +95,8 @@ class _AuthorPostsScreenState extends State<AuthorPostsScreen> {
             itemBuilder: (context, index) {
               if (index == items.length) {
                 return LoadMoreButton(
-                  isLoading: false,
-                  onPressed: () => setState(() => _limit += kLoadMoreStep),
+                  isLoading: _isLoadingMore,
+                  onPressed: _isLoadingMore ? null : _loadNextPage,
                 );
               }
               final item = items[index];

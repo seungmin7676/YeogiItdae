@@ -35,6 +35,8 @@ async function requireUser(req, res) {
   try {
     return await admin.auth().verifyIdToken(idToken);
   } catch (e) {
+    // 사유는 서버 로그에만 남기고, 클라이언트엔 일반화된 코드만 내려준다.
+    console.error('[requireUser] verifyIdToken failed:', e.code, e.message);
     res.status(401).json({ error: 'invalid-token' });
     return null;
   }

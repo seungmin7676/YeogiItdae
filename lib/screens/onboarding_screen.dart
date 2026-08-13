@@ -49,7 +49,11 @@ class OnboardingScreen extends StatefulWidget {
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final _controller = PageController();
   int _index = 0;
-  bool _dontShowAgain = false;
+
+  /// 기본값은 "다시 보지 않기". 사용법 튜토리얼은 한 번 보면 충분한데,
+  /// 기본이 꺼짐이면 체크를 놓친 대부분의 사용자가 로그인할 때마다 같은
+  /// 화면을 네 장씩 다시 넘겨야 했다. 다시 보고 싶은 사람만 해제하면 된다.
+  bool _dontShowAgain = true;
 
   @override
   void dispose() {
@@ -185,38 +189,46 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     horizontal: 8,
                     vertical: 4,
                   ),
-                  child: InkWell(
-                    onTap: () =>
-                        setState(() => _dontShowAgain = !_dontShowAgain),
-                    borderRadius: BorderRadius.circular(8),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 4,
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IgnorePointer(
-                            child: Checkbox(
-                              value: _dontShowAgain,
-                              activeColor: AppColors.primary,
-                              visualDensity: VisualDensity.compact,
-                              materialTapTargetSize:
-                                  MaterialTapTargetSize.shrinkWrap,
-                              onChanged: (_) {},
+                  // 탭 처리는 바깥 InkWell이 맡고 Checkbox는 표시용이므로,
+                  // 스크린 리더에는 이 영역 전체를 하나의 체크박스로 알린다.
+                  child: Semantics(
+                    checked: _dontShowAgain,
+                    label: '다음부터 보지 않기',
+                    child: InkWell(
+                      onTap: () =>
+                          setState(() => _dontShowAgain = !_dontShowAgain),
+                      borderRadius: BorderRadius.circular(8),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 4,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            ExcludeSemantics(
+                              child: IgnorePointer(
+                                child: Checkbox(
+                                  value: _dontShowAgain,
+                                  activeColor: AppColors.primary,
+                                  visualDensity: VisualDensity.compact,
+                                  materialTapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                  onChanged: (_) {},
+                                ),
+                              ),
                             ),
-                          ),
-                          const SizedBox(width: 4),
-                          const Text(
-                            '다음부터 보지 않기',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: AppColors.inkMuted,
-                              fontWeight: FontWeight.w600,
+                            const SizedBox(width: 4),
+                            const Text(
+                              '다음부터 보지 않기',
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: AppColors.inkMuted,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                     ),
                   ),
@@ -235,16 +247,21 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                               borderRadius: BorderRadius.circular(1),
                             ),
                           ),
-                          AnimatedContainer(
-                            duration: const Duration(milliseconds: 250),
-                            height: 2,
-                            width:
-                                MediaQuery.of(context).size.width *
-                                0.86 *
-                                ((_index + 1) / _kOnboardingPages.length),
-                            decoration: BoxDecoration(
-                              color: _accent,
-                              borderRadius: BorderRadius.circular(1),
+                          // 진행 길이는 화면 폭에서 어림잡지 않고 트랙 폭을
+                          // 기준으로 잡는다. 예전에는 화면 폭의 86%로 계산해
+                          // 좁은 기기에서 마지막 장의 막대가 트랙 밖으로
+                          // 삐져나가 잘렸다.
+                          FractionallySizedBox(
+                            alignment: Alignment.centerLeft,
+                            widthFactor:
+                                (_index + 1) / _kOnboardingPages.length,
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 250),
+                              height: 2,
+                              decoration: BoxDecoration(
+                                color: _accent,
+                                borderRadius: BorderRadius.circular(1),
+                              ),
                             ),
                           ),
                         ],

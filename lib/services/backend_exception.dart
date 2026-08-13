@@ -6,5 +6,13 @@ const String kVerifyBackendUrl = 'https://verifybackend-eight.vercel.app';
 
 class BackendException implements Exception {
   final String code;
-  BackendException(this.code);
+
+  /// 오류 응답 본문 전체. 코드 외에 함께 내려오는 값(예: 재가입 제한의
+  /// daysLeft)을 화면에서 쓰기 위해 그대로 들고 있는다.
+  final Map<String, dynamic> data;
+
+  BackendException(this.code, {this.data = const {}});
+
+  /// 응답 본문의 정수 값을 꺼낸다(없으면 null).
+  int? intValue(String key) => (data[key] as num?)?.toInt();
 }

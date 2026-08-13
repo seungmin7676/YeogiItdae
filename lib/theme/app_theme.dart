@@ -88,6 +88,13 @@ const List<BoxShadow> kElevatedShadow = [
   ),
 ];
 
+/// 시스템 글자 확대에 맞춰 높이가 정해진 컨트롤(세그먼트·칩 줄 등)도 함께
+/// 키운다. 높이를 상수로 못 박아두면 접근성 설정에서 글자를 키웠을 때 라벨이
+/// 위아래로 잘려 오히려 못 읽게 되므로, 텍스트 배율만큼(최대 1.3배) 늘린다.
+/// 배율 상한은 main.dart의 [MediaQuery.withClampedTextScaling]과 맞춰둔 값이다.
+double scaledControlHeight(BuildContext context, double base) =>
+    MediaQuery.textScalerOf(context).scale(base).clamp(base, base * 1.3);
+
 /// 앱 전역에서 공유하는 입력 필드 데코레이션. 채워진 회백색 필드에
 /// 포커스 시에만 브랜드 링을 두른다.
 InputDecoration appInputDecoration(

@@ -75,7 +75,10 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
         ? <String, dynamic>{}
         : jsonDecode(response.body) as Map<String, dynamic>;
     if (response.statusCode >= 400) {
-      throw BackendException(decoded['error'] as String? ?? 'unknown');
+      throw BackendException(
+        decoded['error'] as String? ?? 'unknown',
+        data: decoded,
+      );
     }
     return decoded;
   }
@@ -89,6 +92,28 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
       default:
         return '코드 발송에 실패했습니다. 잠시 후 다시 시도해주세요.';
     }
+  }
+
+  /// 탈퇴 후 재가입 제한에 걸린 경우. 백엔드가 방금 만들어진 계정을 이미
+  /// 되돌렸으므로, 이 기기의 로그인 상태만 정리하고 이유를 알려준다.
+  Future<void> _handleWithdrawnCooldown(int daysLeft) async {
+    await FirebaseAuth.instance.signOut();
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('지금은 가입할 수 없어요'),
+        content: Text(
+          '탈퇴한 계정과 같은 학번으로는 바로 다시 가입할 수 없어요.\n$daysLeft일 뒤부터 가입할 수 있습니다.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('확인'),
+          ),
+        ],
+      ),
+    );
   }
 
   String _verifyErrorMessage(String code) {
@@ -117,6 +142,13 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
         );
       }
     } on BackendException catch (e) {
+      // 재가입 제한은 화면에 처음 들어오자마자(silent) 걸리는 경우가 대부분이라,
+      // 다른 오류와 달리 조용히 넘기면 안 된다 — 백엔드가 계정을 되돌린 상태라
+      // 그대로 두면 사용자가 아무것도 못 하는 인증 화면에 갇힌다.
+      if (e.code == 'withdrawn-cooldown') {
+        await _handleWithdrawnCooldown(e.intValue('daysLeft') ?? 0);
+        return;
+      }
       if (e.code == 'cooldown') _startCooldown();
       if (mounted && !silent) {
         ScaffoldMessenger.of(
@@ -151,9 +183,14 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
       await FirebaseAuth.instance.currentUser?.reload();
       await FirebaseAuth.instance.currentUser?.getIdToken(true);
     } on BackendException catch (e) {
-      setState(() => _errorText = _verifyErrorMessage(e.code));
+      // 인증에 성공하면 AuthGate가 이 화면을 곧바로 걷어내므로, 응답이
+      // 늦게 온 경우 위젯이 이미 사라져 있을 수 있다. mounted를 확인하지
+      // 않으면 dispose 이후 setState로 예외가 난다.
+      if (mounted) setState(() => _errorText = _verifyErrorMessage(e.code));
     } catch (e) {
-      setState(() => _errorText = '인증에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      if (mounted) {
+        setState(() => _errorText = '인증에 실패했습니다. 잠시 후 다시 시도해주세요.');
+      }
     } finally {
       if (mounted) setState(() => _isVerifying = false);
     }

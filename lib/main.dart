@@ -6,6 +6,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'firebase_options.dart';
 import 'screens/auth_gate.dart';
@@ -76,6 +77,16 @@ class MyApp extends StatelessWidget {
     return MaterialApp(
       title: '여기있대!',
       debugShowCheckedModeBanner: false,
+      // 앱 문구가 전부 한국어인데 Material 기본 문자열(텍스트 선택 메뉴의
+      // Cut/Copy/Paste, 팝업 메뉴 툴팁 "Show menu" 등)만 영어로 나오던 것을
+      // 맞춘다. 한국어 하나만 지원하므로 기기 언어와 무관하게 ko로 고정한다.
+      locale: const Locale('ko'),
+      supportedLocales: const [Locale('ko')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       theme: ThemeData(
         useMaterial3: true,
         fontFamily: 'Pretendard',
@@ -245,8 +256,15 @@ class MyApp extends StatelessWidget {
         ),
       ),
       navigatorKey: rootNavigatorKey,
-      builder: (context, child) =>
-          AppUserDataProvider(child: child ?? const SizedBox.shrink()),
+      // 시스템 글자 크기를 존중하되 상한을 둔다. 안드로이드는 접근성 설정에서
+      // 2.0배까지 올릴 수 있는데, 그 배율에서는 칩·세그먼트·배지처럼 높이가
+      // 정해진 컨트롤이 잘려 오히려 읽을 수 없게 된다. 1.3배까지는 각 컨트롤이
+      // 함께 커지도록 만들어 두었다(app_ui.dart 참고).
+      builder: (context, child) => MediaQuery.withClampedTextScaling(
+        minScaleFactor: 1.0,
+        maxScaleFactor: 1.3,
+        child: AppUserDataProvider(child: child ?? const SizedBox.shrink()),
+      ),
       // 대부분의 화면 전환이 이름 없는 라우트(Navigator.push +
       // MaterialPageRoute)라 화면 이름 자체는 잡히지 않지만, 그래도 화면
       // 전환 빈도·세션 길이 같은 기본 지표는 자동으로 남는다.

@@ -2,6 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 
+import '../services/search_tokens.dart';
+
 /// 글 종류
 enum ItemType {
   found,
@@ -181,6 +183,9 @@ class LostFoundItem {
       'authorNickname': authorNickname,
       'resolved': resolved,
       'imageUrls': imageUrls,
+      // 서버 검색용 2-gram. 제목·설명이 바뀔 때마다 함께 다시 계산해야
+      // 검색 결과가 최신 내용과 어긋나지 않는다(search_tokens.dart 참고).
+      'searchTokens': buildSearchTokens(title, description),
       'reportCount': 0,
       'viewCount': 0,
       'hidden': false,
@@ -198,6 +203,7 @@ class LostFoundItem {
       'category': category,
       'resolved': resolved,
       'imageUrls': imageUrls,
+      'searchTokens': buildSearchTokens(title, description),
     };
   }
 }

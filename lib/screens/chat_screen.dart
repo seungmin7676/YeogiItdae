@@ -19,7 +19,7 @@ import '../widgets/app_user_data.dart';
 import '../widgets/confirm_dialog.dart';
 import '../widgets/feed_message.dart';
 import '../widgets/image_source_sheet.dart';
-import '../widgets/user_avatar.dart';
+import '../widgets/user_profile.dart';
 
 /// 화면: 1:1 채팅
 class ChatScreen extends StatefulWidget {
@@ -61,16 +61,30 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   late final ChatMessageSender _messageSender = ChatMessageSender(
     FirebaseFirestore.instance,
   );
-  late final Future<Timestamp?> _myClearedAtFuture = _loadMyClearedAt();
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _messagesSub;
   Timer? _typingTimer;
   bool _isTypingFlagSet = false;
 
+  // 채팅방 문서는 앱바(입력 중 표시), 메뉴(작성자 여부), 배너(거래완료·실명
+  // 공개), 본문(문서 존재 여부·읽음 시각) 네 곳에서 필요하다. 예전에는 각
+  // 자리에서 따로 StreamBuilder를 만들었는데, 스트림을 build 안에서 생성하는
+  // 구조라 사진 전송·거래완료 같은 setState가 일어날 때마다 네 개의 구독이
+  // 모두 해제·재구독됐다. 여기서 한 번만 구독해 상태로 들고 있는다.
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _chatSub;
+  Map<String, dynamic>? _chatData;
+  bool _chatLoaded = false;
+  bool _chatFailed = false;
+
+  /// 메시지 목록 스트림. "내가 나간 시점(clearedAt) 이후"라는 조건이 방을 연
+  /// 순간 기준으로 고정돼야 하고, 리빌드마다 재구독되면 안 되므로 채팅방
+  /// 문서를 처음 읽은 시점에 한 번만 만든다.
+  Stream<QuerySnapshot<Map<String, dynamic>>>? _messagesStream;
+
+  DocumentReference<Map<String, dynamic>> get _chatRef =>
+      FirebaseFirestore.instance.collection('chats').doc(widget.chatId);
+
   CollectionReference<Map<String, dynamic>> get _messagesRef =>
-      FirebaseFirestore.instance
-          .collection('chats')
-          .doc(widget.chatId)
-          .collection('messages');
+      _chatRef.collection('messages');
 
   @override
   void initState() {
@@ -87,6 +101,43 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         .listen((_) {
           _markAsRead();
         });
+    _chatSub = _chatRef.snapshots().listen(
+      (snap) {
+        if (!mounted) return;
+        setState(() {
+          _chatLoaded = true;
+          _chatFailed = false;
+          _chatData = snap.data();
+          if (snap.exists) _ensureMessagesStream();
+        });
+      },
+      onError: (_) {
+        // 채팅방 문서를 못 읽어도(권한·네트워크) 화면이 스피너에 영원히
+        // 갇히지 않도록, 로딩을 끝내고 다시 시도할 수 있는 안내를 보여준다.
+        if (mounted) {
+          setState(() {
+            _chatLoaded = true;
+            _chatFailed = true;
+          });
+        }
+      },
+    );
+  }
+
+  /// 메시지 스트림을 아직 안 만들었으면 만든다(이미 있으면 그대로 둔다).
+  /// 반드시 setState 안에서 호출한다.
+  void _ensureMessagesStream() {
+    if (_messagesStream != null) return;
+    final clearedAt =
+        Map<String, dynamic>.from(
+              _chatData?['clearedAt'] as Map? ?? const {},
+            )[FirebaseAuth.instance.currentUser?.uid]
+            as Timestamp?;
+    Query<Map<String, dynamic>> query = _messagesRef.orderBy('createdAt');
+    if (clearedAt != null) {
+      query = query.where('createdAt', isGreaterThan: clearedAt);
+    }
+    _messagesStream = query.snapshots();
   }
 
   @override
@@ -108,27 +159,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     });
   }
 
-  /// 카카오톡 방식 나가기: 내가 마지막으로 나간(비운) 시점 이전 메시지는
-  /// 내 화면에서만 숨긴다. 상대방은 이 값과 무관하게 전체 대화를 그대로 본다.
-  Future<Timestamp?> _loadMyClearedAt() async {
-    final myUid = FirebaseAuth.instance.currentUser?.uid;
-    if (myUid == null) return null;
-    final doc = await FirebaseFirestore.instance
-        .collection('chats')
-        .doc(widget.chatId)
-        .get();
-    final clearedAt = Map<String, dynamic>.from(
-      doc.data()?['clearedAt'] as Map? ?? {},
-    );
-    return clearedAt[myUid] as Timestamp?;
-  }
-
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _messageController.dispose();
     _scrollController.dispose();
     _messagesSub?.cancel();
+    _chatSub?.cancel();
     _typingTimer?.cancel();
     final myUid = FirebaseAuth.instance.currentUser?.uid;
     if (myUid != null && _isTypingFlagSet) {
@@ -233,7 +270,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   /// 방금 보낸 메시지를 상대에게 푸시로 보낸다. 첫 문의(방 생성)면
   /// chat_started, 이후면 chat_message 종류로 발송한다.
-  void _pushForMessage(User user, {required bool created, required String body}) {
+  void _pushForMessage(
+    User user, {
+    required bool created,
+    required String body,
+  }) {
     sendPush(
       recipientUid: widget.otherUid,
       type: created ? 'chat_started' : 'chat_message',
@@ -746,6 +787,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final myUid = FirebaseAuth.instance.currentUser?.uid;
+    // 사진 말풍선(화면 폭의 55%)에 맞춘 디코딩 폭.
+    final bubbleDecodeWidth =
+        (MediaQuery.sizeOf(context).width *
+                0.55 *
+                MediaQuery.devicePixelRatioOf(context))
+            .round();
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(
@@ -754,19 +801,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         titleSpacing: 4,
         title: Row(
           children: [
-            StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance
-                  .collection('userPublicProfiles')
-                  .doc(widget.otherUid)
-                  .snapshots(),
-              builder: (context, profileSnapshot) {
-                return UserAvatar(
-                  nickname: widget.otherNickname,
-                  photoUrl:
-                      profileSnapshot.data?.data()?['photoUrl'] as String?,
-                  size: 34,
-                );
-              },
+            UserProfileAvatar(
+              uid: widget.otherUid,
+              fallbackNickname: widget.otherNickname,
+              size: 34,
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -782,14 +820,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       color: AppColors.ink,
                     ),
                   ),
-                  StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                    stream: FirebaseFirestore.instance
-                        .collection('chats')
-                        .doc(widget.chatId)
-                        .snapshots(),
-                    builder: (context, chatSnapshot) {
+                  Builder(
+                    builder: (context) {
                       final typing = Map<String, dynamic>.from(
-                        chatSnapshot.data?.data()?['typing'] as Map? ?? {},
+                        _chatData?['typing'] as Map? ?? const {},
                       );
                       final isOtherTyping =
                           typing[widget.otherUid] as bool? ?? false;
@@ -805,6 +839,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       }
                       return Text(
                         widget.itemTitle,
+                        maxLines: 1,
                         style: const TextStyle(
                           fontSize: 12,
                           color: AppColors.inkMuted,
@@ -819,20 +854,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ],
         ),
         actions: [
-          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-            stream: FirebaseFirestore.instance
-                .collection('chats')
-                .doc(widget.chatId)
-                .snapshots(),
-            builder: (context, snapshot) {
+          Builder(
+            builder: (context) {
               final myUid = FirebaseAuth.instance.currentUser?.uid;
-              final chatData = snapshot.data?.data();
+              final chatData = _chatData;
               final itemAuthorUid = chatData?['itemAuthorUid'] as String?;
               final isOwner = myUid != null && myUid == itemAuthorUid;
               final itemDeleted = chatData?['itemDeleted'] == true;
 
               return PopupMenuButton<String>(
                 icon: const Icon(Icons.more_vert),
+                tooltip: '채팅방 메뉴',
                 onSelected: (value) {
                   if (value == 'resolve') _requestResolution();
                   if (value == 'reveal') _revealRealName();
@@ -867,13 +899,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       ),
       body: Column(
         children: [
-          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-            stream: FirebaseFirestore.instance
-                .collection('chats')
-                .doc(widget.chatId)
-                .snapshots(),
-            builder: (context, snapshot) {
-              final data = snapshot.data?.data();
+          Builder(
+            builder: (context) {
+              final data = _chatData;
               if (data == null) return const SizedBox.shrink();
 
               final myUid = FirebaseAuth.instance.currentUser?.uid;
@@ -902,7 +930,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 banners.add(
                   _ChatBanner(
                     icon: Icons.verified_user_outlined,
-                    text: '${widget.otherNickname}님이 실명·학번을 공개했어요: $otherRealName',
+                    text:
+                        '${widget.otherNickname}님이 실명·학번을 공개했어요: $otherRealName',
                   ),
                 );
               }
@@ -959,216 +988,193 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               builder: (context) {
                 final myBlockedUids = AppUserData.of(context).blockedUids;
 
-                return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                  stream: FirebaseFirestore.instance
-                      .collection('chats')
-                      .doc(widget.chatId)
-                      .snapshots(),
-                  builder: (context, chatSnapshot) {
-                    final lastReadAt = Map<String, dynamic>.from(
-                      chatSnapshot.data?.data()?['lastReadAt'] as Map? ?? {},
-                    );
-                    final otherLastReadAt =
-                        lastReadAt[widget.otherUid] as Timestamp?;
+                // 채팅방 문서를 아직 못 읽었으면 잠깐 로딩 표시.
+                final messagesStream = _messagesStream;
+                if (!_chatLoaded) {
+                  return const Center(
+                    child: CircularProgressIndicator(color: AppColors.primary),
+                  );
+                }
+                if (_chatFailed && messagesStream == null) {
+                  return const FeedMessage(
+                    icon: Icons.error_outline_rounded,
+                    title: '채팅방을 불러오지 못했어요',
+                    text: '네트워크 상태를 확인한 뒤 다시 들어와주세요.',
+                  );
+                }
+                // 첫 메시지 전이라 채팅방 문서가 아직 없으면(유령 방 방지)
+                // 메시지 하위 컬렉션을 읽을 때 권한 오류가 난다. 이때는
+                // 에러 대신 빈 대화 상태를 보여준다. 첫 메시지를 보내면
+                // 문서가 생성되며 이후 정상적으로 메시지가 로드된다.
+                // 한 번 만든 스트림은 계속 쓴다 — 조건에서 문서 존재 여부를
+                // 다시 보면 문서가 잠깐 사라졌다 돌아올 때 같은 스트림을
+                // 두 번 listen하게 된다.
+                if (messagesStream == null) {
+                  _lastMessageCount = 0;
+                  return const FeedMessage(
+                    icon: Icons.chat_bubble_outline_rounded,
+                    title: '대화를 시작해보세요',
+                    text: '물건의 상태나 전달 방법을\n첫 메시지로 보내보세요.',
+                  );
+                }
+                final lastReadAt = Map<String, dynamic>.from(
+                  _chatData?['lastReadAt'] as Map? ?? const {},
+                );
+                final otherLastReadAt =
+                    lastReadAt[widget.otherUid] as Timestamp?;
 
-                    return FutureBuilder<Timestamp?>(
-                      future: _myClearedAtFuture,
-                      builder: (context, clearedSnapshot) {
-                        if (clearedSnapshot.connectionState ==
-                            ConnectionState.waiting) {
-                          return const Center(
-                            child: CircularProgressIndicator(
-                              color: AppColors.primary,
+                return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: messagesStream,
+                  builder: (context, snapshot) {
+                    if (snapshot.hasError) {
+                      return const FeedMessage(
+                        icon: Icons.error_outline_rounded,
+                        text: '메시지를 불러오지 못했습니다.',
+                      );
+                    }
+                    if (!snapshot.hasData) {
+                      return const Center(
+                        child: CircularProgressIndicator(
+                          color: AppColors.primary,
+                        ),
+                      );
+                    }
+
+                    // 내가 차단한 사용자가 보낸 메시지는 완전히
+                    // 걸러내 마치 메시지가 오지 않은 것처럼 보이게 한다.
+                    final docs = snapshot.data!.docs.where((doc) {
+                      final senderUid = doc.data()['senderUid'];
+                      return !myBlockedUids.contains(senderUid);
+                    }).toList();
+                    if (docs.isEmpty) {
+                      _lastMessageCount = 0;
+                      return const FeedMessage(
+                        icon: Icons.chat_bubble_outline_rounded,
+                        title: '대화를 시작해보세요',
+                        text: '물건의 상태나 전달 방법을\n첫 메시지로 보내보세요.',
+                      );
+                    }
+
+                    // 메시지 수가 실제로 늘었을 때(첫 로드·새 메시지)만
+                    // 맨 아래로 내린다. 상대의 입력 중/읽음 표시로 인한
+                    // 리빌드에서는 스크롤 위치를 건드리지 않는다.
+                    if (docs.length != _lastMessageCount) {
+                      _lastMessageCount = docs.length;
+                      _scrollToBottom();
+                    }
+                    return ListView.builder(
+                      controller: _scrollController,
+                      padding: const EdgeInsets.all(16),
+                      itemCount: docs.length,
+                      itemBuilder: (context, index) {
+                        final data = docs[index].data();
+                        final isMine = data['senderUid'] == myUid;
+                        final isImage = data['type'] == 'image';
+                        final createdAt = data['createdAt'] as Timestamp?;
+                        // 카카오톡처럼 내가 보낸 메시지를 상대방이
+                        // 아직 읽지 않았으면 '1'을 표시한다.
+                        final showUnread =
+                            isMine &&
+                            !(otherLastReadAt != null &&
+                                createdAt != null &&
+                                otherLastReadAt.compareTo(createdAt) >= 0);
+
+                        if (isImage) {
+                          final imageUrl = data['imageUrl'] as String? ?? '';
+                          return Align(
+                            alignment: isMine
+                                ? Alignment.centerRight
+                                : Alignment.centerLeft,
+                            child: _withMeta(
+                              isMine: isMine,
+                              showUnread: showUnread,
+                              createdAt: createdAt?.toDate(),
+                              bubble: GestureDetector(
+                                onTap: () => _openImageViewer(imageUrl),
+                                child: Container(
+                                  margin: const EdgeInsets.only(bottom: 8),
+                                  constraints: BoxConstraints(
+                                    maxWidth:
+                                        MediaQuery.of(context).size.width *
+                                        0.55,
+                                  ),
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(
+                                      kRadiusLg,
+                                    ),
+                                    child: CachedNetworkImage(
+                                      imageUrl: imageUrl,
+                                      fit: BoxFit.cover,
+                                      // 말풍선은 화면 폭의 55%다. 원본(최대
+                                      // 1600px)을 그대로 디코딩하면 사진이 많은
+                                      // 대화에서 메모리가 크게 늘어난다.
+                                      // (탭해서 여는 뷰어는 원본을 쓴다.)
+                                      memCacheWidth: bubbleDecodeWidth,
+                                      errorWidget: (context, url, error) =>
+                                          Container(
+                                            width: 160,
+                                            height: 160,
+                                            color: AppColors.surfaceAlt,
+                                            child: const Icon(
+                                              Icons.broken_image_outlined,
+                                              color: AppColors.inkFaint,
+                                            ),
+                                          ),
+                                    ),
+                                  ),
+                                ),
+                              ),
                             ),
                           );
                         }
 
-                        final myClearedAt = clearedSnapshot.data;
-                        Query<Map<String, dynamic>> query = _messagesRef
-                            .orderBy('createdAt');
-                        if (myClearedAt != null) {
-                          query = query.where(
-                            'createdAt',
-                            isGreaterThan: myClearedAt,
-                          );
-                        }
-
-                        return StreamBuilder<
-                          QuerySnapshot<Map<String, dynamic>>
-                        >(
-                          stream: query.snapshots(),
-                          builder: (context, snapshot) {
-                            if (snapshot.hasError) {
-                              return const FeedMessage(
-                                icon: Icons.error_outline_rounded,
-                                text: '메시지를 불러오지 못했습니다.',
-                              );
-                            }
-                            if (!snapshot.hasData) {
-                              return const Center(
-                                child: CircularProgressIndicator(
-                                  color: AppColors.primary,
+                        final messageText = data['text'] as String? ?? '';
+                        return Align(
+                          alignment: isMine
+                              ? Alignment.centerRight
+                              : Alignment.centerLeft,
+                          child: _withMeta(
+                            isMine: isMine,
+                            showUnread: showUnread,
+                            createdAt: createdAt?.toDate(),
+                            bubble: GestureDetector(
+                              onLongPress: () => _copyMessageText(messageText),
+                              child: Container(
+                                margin: const EdgeInsets.only(bottom: 8),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 10,
                                 ),
-                              );
-                            }
-
-                            // 내가 차단한 사용자가 보낸 메시지는 완전히
-                            // 걸러내 마치 메시지가 오지 않은 것처럼 보이게 한다.
-                            final docs = snapshot.data!.docs.where((doc) {
-                              final senderUid = doc.data()['senderUid'];
-                              return !myBlockedUids.contains(senderUid);
-                            }).toList();
-                            if (docs.isEmpty) {
-                              _lastMessageCount = 0;
-                              return const FeedMessage(
-                                icon: Icons.chat_bubble_outline_rounded,
-                                title: '대화를 시작해보세요',
-                                text: '물건의 상태나 전달 방법을\n첫 메시지로 보내보세요.',
-                              );
-                            }
-
-                            // 메시지 수가 실제로 늘었을 때(첫 로드·새 메시지)만
-                            // 맨 아래로 내린다. 상대의 입력 중/읽음 표시로 인한
-                            // 리빌드에서는 스크롤 위치를 건드리지 않는다.
-                            if (docs.length != _lastMessageCount) {
-                              _lastMessageCount = docs.length;
-                              _scrollToBottom();
-                            }
-                            return ListView.builder(
-                              controller: _scrollController,
-                              padding: const EdgeInsets.all(16),
-                              itemCount: docs.length,
-                              itemBuilder: (context, index) {
-                                final data = docs[index].data();
-                                final isMine = data['senderUid'] == myUid;
-                                final isImage = data['type'] == 'image';
-                                final createdAt =
-                                    data['createdAt'] as Timestamp?;
-                                // 카카오톡처럼 내가 보낸 메시지를 상대방이
-                                // 아직 읽지 않았으면 '1'을 표시한다.
-                                final showUnread =
-                                    isMine &&
-                                    !(otherLastReadAt != null &&
-                                        createdAt != null &&
-                                        otherLastReadAt.compareTo(createdAt) >=
-                                            0);
-
-                                if (isImage) {
-                                  final imageUrl =
-                                      data['imageUrl'] as String? ?? '';
-                                  return Align(
-                                    alignment: isMine
-                                        ? Alignment.centerRight
-                                        : Alignment.centerLeft,
-                                    child: _withMeta(
-                                      isMine: isMine,
-                                      showUnread: showUnread,
-                                      createdAt: createdAt?.toDate(),
-                                      bubble: GestureDetector(
-                                        onTap: () => _openImageViewer(imageUrl),
-                                        child: Container(
-                                          margin: const EdgeInsets.only(
-                                            bottom: 8,
-                                          ),
-                                          constraints: BoxConstraints(
-                                            maxWidth:
-                                                MediaQuery.of(
-                                                  context,
-                                                ).size.width *
-                                                0.55,
-                                          ),
-                                          child: ClipRRect(
-                                            borderRadius: BorderRadius.circular(
-                                              kRadiusLg,
-                                            ),
-                                            child: CachedNetworkImage(
-                                              imageUrl: imageUrl,
-                                              fit: BoxFit.cover,
-                                              errorWidget:
-                                                  (
-                                                    context,
-                                                    url,
-                                                    error,
-                                                  ) => Container(
-                                                    width: 160,
-                                                    height: 160,
-                                                    color: AppColors.surfaceAlt,
-                                                    child: const Icon(
-                                                      Icons
-                                                          .broken_image_outlined,
-                                                      color: AppColors.inkFaint,
-                                                    ),
-                                                  ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
+                                constraints: BoxConstraints(
+                                  maxWidth:
+                                      MediaQuery.of(context).size.width * 0.7,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isMine
+                                      ? AppColors.primary
+                                      : AppColors.surfaceAlt,
+                                  borderRadius: BorderRadius.only(
+                                    topLeft: const Radius.circular(kRadiusLg),
+                                    topRight: const Radius.circular(kRadiusLg),
+                                    bottomLeft: Radius.circular(
+                                      isMine ? kRadiusLg : 4,
                                     ),
-                                  );
-                                }
-
-                                final messageText =
-                                    data['text'] as String? ?? '';
-                                return Align(
-                                  alignment: isMine
-                                      ? Alignment.centerRight
-                                      : Alignment.centerLeft,
-                                  child: _withMeta(
-                                    isMine: isMine,
-                                    showUnread: showUnread,
-                                    createdAt: createdAt?.toDate(),
-                                    bubble: GestureDetector(
-                                      onLongPress: () =>
-                                          _copyMessageText(messageText),
-                                      child: Container(
-                                        margin: const EdgeInsets.only(
-                                          bottom: 8,
-                                        ),
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 14,
-                                          vertical: 10,
-                                        ),
-                                        constraints: BoxConstraints(
-                                          maxWidth:
-                                              MediaQuery.of(
-                                                context,
-                                              ).size.width *
-                                              0.7,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: isMine
-                                              ? AppColors.primary
-                                              : AppColors.surfaceAlt,
-                                          borderRadius: BorderRadius.only(
-                                            topLeft: const Radius.circular(
-                                              kRadiusLg,
-                                            ),
-                                            topRight: const Radius.circular(
-                                              kRadiusLg,
-                                            ),
-                                            bottomLeft: Radius.circular(
-                                              isMine ? kRadiusLg : 4,
-                                            ),
-                                            bottomRight: Radius.circular(
-                                              isMine ? 4 : kRadiusLg,
-                                            ),
-                                          ),
-                                        ),
-                                        child: Text(
-                                          messageText,
-                                          style: TextStyle(
-                                            color: isMine
-                                                ? Colors.white
-                                                : AppColors.ink,
-                                          ),
-                                        ),
-                                      ),
+                                    bottomRight: Radius.circular(
+                                      isMine ? 4 : kRadiusLg,
                                     ),
                                   ),
-                                );
-                              },
-                            );
-                          },
+                                ),
+                                child: Text(
+                                  messageText,
+                                  style: TextStyle(
+                                    color: isMine
+                                        ? Colors.white
+                                        : AppColors.ink,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                         );
                       },
                     );
@@ -1236,22 +1242,36 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    Material(
-                      color: AppColors.primary,
-                      shape: const CircleBorder(),
-                      child: InkWell(
-                        customBorder: const CircleBorder(),
-                        onTap: _send,
-                        child: const Padding(
-                          padding: EdgeInsets.all(10),
-                          child: Icon(
-                            Icons.arrow_upward_rounded,
-                            size: 20,
-                            color: Colors.white,
-                            semanticLabel: '전송',
+                    // 보낼 내용이 없으면 눌러도 아무 일이 없었는데, 버튼은
+                    // 계속 활성 상태로 보여 "왜 안 보내지지?"로 읽혔다.
+                    // 입력값에만 반응하는 작은 구독으로 바꿔, 대화 목록 전체를
+                    // 리빌드하지 않으면서 버튼 상태만 정확히 표시한다.
+                    ValueListenableBuilder<TextEditingValue>(
+                      valueListenable: _messageController,
+                      builder: (context, value, child) {
+                        final canSend = value.text.trim().isNotEmpty;
+                        return Material(
+                          color: canSend
+                              ? AppColors.primary
+                              : AppColors.surfaceAlt,
+                          shape: const CircleBorder(),
+                          child: InkWell(
+                            customBorder: const CircleBorder(),
+                            onTap: canSend ? _send : null,
+                            child: Padding(
+                              padding: const EdgeInsets.all(10),
+                              child: Icon(
+                                Icons.arrow_upward_rounded,
+                                size: 20,
+                                color: canSend
+                                    ? Colors.white
+                                    : AppColors.inkFaint,
+                                semanticLabel: '전송',
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
+                        );
+                      },
                     ),
                   ],
                 ),

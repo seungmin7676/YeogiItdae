@@ -6,6 +6,7 @@ import '../services/error_messages.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_user_data.dart';
 import '../widgets/feed_message.dart';
+import '../widgets/user_profile.dart';
 
 /// 화면: 차단한 사용자 관리
 class BlockedUsersScreen extends StatelessWidget {
@@ -68,23 +69,15 @@ class BlockedUsersScreen extends StatelessWidget {
                   horizontal: kPagePadding,
                   vertical: 2,
                 ),
-                title: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-                  stream: FirebaseFirestore.instance
-                      .collection('userPublicProfiles')
-                      .doc(otherUid)
-                      .snapshots(),
-                  builder: (context, profileSnapshot) {
-                    final nickname =
-                        profileSnapshot.data?.data()?['nickname'] as String? ??
-                        fallbackNickname;
-                    return Text(
-                      nickname,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w600,
-                        fontSize: 15,
-                      ),
-                    );
-                  },
+                // 행마다 실시간 리스너를 붙이지 않고 세션 캐시에서 읽는다
+                // (user_profile_cache.dart 참고).
+                title: UserProfileNickname(
+                  uid: otherUid,
+                  fallbackNickname: fallbackNickname,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 15,
+                  ),
                 ),
                 trailing: OutlinedButton(
                   onPressed: uid == null

@@ -29,7 +29,9 @@ service cloud.firestore {
           && data.category is string
           && data.authorNickname is string
           && data.resolved is bool
-          && data.imageUrls is list;
+          && data.imageUrls is list
+          // 서버 검색용 2-gram 배열(lib/services/search_tokens.dart).
+          && (!('searchTokens' in data) || data.searchTokens is list);
     }
 
     // 수정 시에는 "존재하는 필드의 타입이 올바른지"만 검증한다. 예전 버전
@@ -48,7 +50,8 @@ service cloud.firestore {
           && (!('category' in data) || data.category is string)
           && (!('authorNickname' in data) || data.authorNickname is string)
           && (!('resolved' in data) || data.resolved is bool)
-          && (!('imageUrls' in data) || data.imageUrls is list);
+          && (!('imageUrls' in data) || data.imageUrls is list)
+          && (!('searchTokens' in data) || data.searchTokens is list);
     }
 
     match /items/{itemId} {
@@ -101,6 +104,14 @@ service cloud.firestore {
 
     // 이메일 인증 코드는 Vercel 백엔드(Admin SDK)만 접근한다. 클라이언트 직접 접근은 전면 차단.
     match /emailVerificationCodes/{uid} {
+      allow read, write: if false;
+    }
+
+    // 탈퇴 후 재가입 제한 기록(문서 ID = 이메일의 SHA-256).
+    // 탈퇴자 명단이므로 클라이언트는 읽지도 쓰지도 못한다. 기록과 확인은
+    // Admin SDK를 쓰는 백엔드(verify_backend/_withdrawal.js)만 한다 —
+    // 클라이언트가 쓸 수 있으면 제한을 스스로 지우고 재가입할 수 있다.
+    match /withdrawnUsers/{emailHash} {
       allow read, write: if false;
     }
 
@@ -164,13 +175,15 @@ service cloud.firestore {
                   && isOptionalBool(request.resource.data, 'notifyItemHidden');
     }
 
-    // 키워드/카테고리 구독 알림 저장 목록: 새 글이 등록될 때 글을 올리는
-    // 클라이언트가 직접 전체 목록을 훑어 일치하는 사용자에게 알림을 보내는
-    // 방식이라(백엔드 서버 함수 없이 처리하기 위함), 다른 사용자도 읽을 수
-    // 있어야 한다. 쓰기는 본인만 가능하다.
+    // 키워드/카테고리 구독 알림 저장 목록: 본인만 읽고 쓴다.
+    //
+    // 예전에는 글을 올리는 클라이언트가 이 컬렉션 전체를 훑어 매칭했기 때문에
+    // 모든 로그인 사용자에게 읽기를 열어둬야 했고, 그 결과 아무나 남의 저장
+    // 키워드를 uid와 함께 열람할 수 있었다. 지금은 Admin SDK를 쓰는 백엔드
+    // (verify_backend/api/notify-matches.js)가 매칭하므로 본인만 읽으면 된다.
     // { keywords: [string, ...], categories: [string, ...] } 형태.
     match /savedSearches/{uid} {
-      allow read: if request.auth != null;
+      allow read: if request.auth != null && request.auth.uid == uid;
       allow write: if request.auth != null
                   && request.auth.uid == uid
                   && request.resource.data.keys().hasOnly(['keywords', 'categories'])
@@ -250,12 +263,25 @@ service cloud.firestore {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }
 
-    // 알림: 수신자 본인만 읽기/삭제/읽음처리 가능. 생성은 발신자 본인 명의로만 가능.
+    // 알림: 수신자 본인만 읽기/삭제/읽음처리 가능.
+    //
+    // 생성은 발신자 본인 명의로, **종류까지 제한해서** 허용한다. 예전에는
+    // 종류를 안 봤는데, 키워드 알림 매칭을 클라이언트가 하던 시절이라
+    // 어쩔 수 없었다. 그 결과 아무나 임의의 사용자에게 아무 종류의 알림을
+    // 만들어 보낼 수 있었다(예: 가짜 '신고 검토 결과'). 지금 클라이언트가
+    // 직접 만드는 알림은 채팅 첫 문의뿐이고, 신고 처리 결과는 관리자만,
+    // 키워드 알림은 백엔드(Admin SDK)가 만든다.
     match /notifications/{notificationId} {
       allow read, update, delete: if request.auth != null
                                   && resource.data.recipientUid == request.auth.uid;
       allow create: if request.auth != null
-                    && request.resource.data.senderUid == request.auth.uid;
+                    && request.resource.data.senderUid == request.auth.uid
+                    && (
+                      request.resource.data.type == 'chat_started'
+                      || (isAdmin()
+                          && request.resource.data.type in
+                             ['item_hidden', 'item_removed', 'report_result'])
+                    );
     }
   }
 }

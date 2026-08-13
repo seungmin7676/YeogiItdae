@@ -11,7 +11,7 @@ import '../widgets/confirm_dialog.dart';
 import '../widgets/count_badge.dart';
 import '../widgets/feed_message.dart';
 import '../widgets/optimistic_hide_mixin.dart';
-import '../widgets/user_avatar.dart';
+import '../widgets/user_profile.dart';
 import 'chat_screen.dart';
 
 /// 화면: 내 채팅 목록
@@ -86,6 +86,26 @@ class _ChatListScreenState extends State<ChatListScreen>
     _searchDebounce = Timer(const Duration(milliseconds: 300), () {
       if (mounted) setState(() => _searchQuery = value);
     });
+  }
+
+  /// 당겨서 새로고침. 목록 자체는 MainNavScreen이 구독 중인 실시간 스트림이
+  /// 그리므로, 여기서는 서버에서 한 번 다시 읽어 캐시를 갱신하는 역할만 한다.
+  /// 화면에 보이는 만큼(현재 페이지)만 읽고, 오프라인 등으로 실패하면 처리되지
+  /// 않은 예외로 남기지 않고 안내로 바꿔준다.
+  Future<void> _refresh(String? uid) async {
+    try {
+      await FirebaseFirestore.instance
+          .collection('chats')
+          .where('participants', arrayContains: uid)
+          .orderBy('lastMessageAt', descending: true)
+          .limit(widget.docs?.length ?? 50)
+          .get(const GetOptions(source: Source.server));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('새로고침하지 못했어요: ${friendlyErrorMessage(e)}')),
+      );
+    }
   }
 
   Future<bool> _confirmLeave(BuildContext context) => showConfirmDialog(
@@ -215,9 +235,14 @@ class _ChatListScreenState extends State<ChatListScreen>
                       return otherNickname.contains(query) ||
                           itemTitle.contains(query);
                     }).toList()..sort((a, b) {
+                      // 아직 메시지가 없는 방(lastMessageAt 없음)은 맨 뒤로
+                      // 보낸다. 예전처럼 0을 돌려주면 비교가 일관되지 않아
+                      // 정렬 결과가 목록을 다시 그릴 때마다 달라질 수 있다.
                       final aAt = a.data()['lastMessageAt'] as Timestamp?;
                       final bAt = b.data()['lastMessageAt'] as Timestamp?;
-                      if (aAt == null || bAt == null) return 0;
+                      if (aAt == null && bAt == null) return 0;
+                      if (aAt == null) return 1;
+                      if (bAt == null) return -1;
                       return bAt.compareTo(aAt);
                     });
 
@@ -235,15 +260,14 @@ class _ChatListScreenState extends State<ChatListScreen>
 
                 return RefreshIndicator(
                   color: AppColors.primary,
-                  onRefresh: () => FirebaseFirestore.instance
-                      .collection('chats')
-                      .where('participants', arrayContains: uid)
-                      .get(const GetOptions(source: Source.server)),
+                  onRefresh: () => _refresh(uid),
                   child: ListView.separated(
                     padding: const EdgeInsets.only(bottom: 20),
                     itemCount: visibleDocs.length + (widget.hasMore ? 1 : 0),
+                    // 구분선은 아바타(48) 오른쪽, 즉 닉네임이 시작하는
+                    // 지점(좌측 패딩 20 + 아바타 48 + 간격 16)에 맞춘다.
                     separatorBuilder: (context, index) =>
-                        const Divider(indent: 80),
+                        const Divider(indent: 84),
                     itemBuilder: (context, index) {
                       if (index == visibleDocs.length) {
                         return LoadMoreButton(
@@ -305,25 +329,13 @@ class _ChatListScreenState extends State<ChatListScreen>
                               horizontal: kPagePadding,
                               vertical: 6,
                             ),
-                            leading:
-                                StreamBuilder<
-                                  DocumentSnapshot<Map<String, dynamic>>
-                                >(
-                                  stream: FirebaseFirestore.instance
-                                      .collection('userPublicProfiles')
-                                      .doc(otherUid)
-                                      .snapshots(),
-                                  builder: (context, profileSnapshot) {
-                                    return UserAvatar(
-                                      nickname: otherNickname,
-                                      photoUrl:
-                                          profileSnapshot.data
-                                                  ?.data()?['photoUrl']
-                                              as String?,
-                                      size: 48,
-                                    );
-                                  },
-                                ),
+                            // 행마다 실시간 리스너를 붙이지 않고 세션 캐시에서
+                            // 읽는다(user_profile_cache.dart 참고).
+                            leading: UserProfileAvatar(
+                              uid: otherUid,
+                              fallbackNickname: otherNickname,
+                              size: 48,
+                            ),
                             title: Text(
                               otherNickname,
                               style: const TextStyle(
