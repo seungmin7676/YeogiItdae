@@ -2,6 +2,7 @@ const {
   initAdmin,
   setCors,
   enforceAppCheckIfConfigured,
+  enforceRateLimit,
   ALLOWED_EMAIL_DOMAIN,
 } = require('../_lib');
 const { checkWithdrawalCooldown } = require('../_withdrawal');
@@ -29,6 +30,20 @@ module.exports = async (req, res) => {
   if (!email || !email.toLowerCase().endsWith(ALLOWED_EMAIL_DOMAIN)) {
     return res.status(403).json({ error: 'domain-not-allowed' });
   }
+
+  if (
+    !(await enforceRateLimit(admin, req, res, {
+      scope: 'signup-eligibility-ip',
+      max: 20,
+      windowMs: 15 * 60 * 1000,
+    })) ||
+    !(await enforceRateLimit(admin, req, res, {
+      scope: 'signup-eligibility-email',
+      identifier: email,
+      max: 6,
+      windowMs: 60 * 60 * 1000,
+    }))
+  ) return;
 
   const { blocked, daysLeft } = await checkWithdrawalCooldown(admin, email);
   return res.status(200).json({ ok: true, allowed: !blocked, daysLeft });

@@ -67,6 +67,10 @@ const double kRadiusPill = 999;
 /// 페이지 좌우 기본 패딩. 풀블리드 행은 내부 패딩으로 같은 값을 쓴다.
 const double kPagePadding = 20;
 
+/// 로그인·프로필 입력처럼 한 줄을 길게 읽으면 안 되는 폼의 최대 너비.
+/// 휴대폰에서는 가용 너비를 모두 쓰고, 태블릿·웹에서는 이 이상 늘어나지 않는다.
+const double kFormMaxWidth = 480;
+
 /// 모션 — 마이크로 인터랙션은 fast, 화면 요소 전환은 standard.
 const Duration kMotionFast = Duration(milliseconds: 160);
 const Duration kMotionStandard = Duration(milliseconds: 240);
@@ -89,11 +93,10 @@ const List<BoxShadow> kElevatedShadow = [
 ];
 
 /// 시스템 글자 확대에 맞춰 높이가 정해진 컨트롤(세그먼트·칩 줄 등)도 함께
-/// 키운다. 높이를 상수로 못 박아두면 접근성 설정에서 글자를 키웠을 때 라벨이
-/// 위아래로 잘려 오히려 못 읽게 되므로, 텍스트 배율만큼(최대 1.3배) 늘린다.
-/// 배율 상한은 main.dart의 [MediaQuery.withClampedTextScaling]과 맞춰둔 값이다.
+/// 키운다. 시스템이 선택한 배율을 앱이 낮추지 않으며, 작은 글꼴 설정에서도
+/// 기본 터치 영역은 줄이지 않는다.
 double scaledControlHeight(BuildContext context, double base) =>
-    MediaQuery.textScalerOf(context).scale(base).clamp(base, base * 1.3);
+    MediaQuery.textScalerOf(context).scale(base).clamp(base, double.infinity);
 
 /// 앱 전역에서 공유하는 입력 필드 데코레이션. 채워진 회백색 필드에
 /// 포커스 시에만 브랜드 링을 두른다.

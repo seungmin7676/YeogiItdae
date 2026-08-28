@@ -9,6 +9,14 @@ service cloud.firestore {
           && request.auth.token.email.matches('.*@hallym[.]ac[.]kr$');
     }
 
+    // 가입 직후 이메일 인증 전 프로필을 만들 때만 사용한다. 서비스의 실제
+    // 데이터(게시글·채팅·알림)는 반드시 isVerifiedHallymUser()를 요구한다.
+    function isHallymEmailAccount() {
+      return request.auth != null
+          && request.auth.token.email is string
+          && request.auth.token.email.matches('.*@hallym[.]ac[.]kr$');
+    }
+
     // 관리자 계정. 신고 검토(reports 열람/삭제)와 게시글 숨김/삭제 권한을
     // 가진 단일 계정으로, 인증된 이메일 토큰으로 식별한다(위조 불가).
     // 클라이언트(lib/services/admin.dart)의 kAdminEmail과 반드시 일치시킨다.
@@ -18,20 +26,60 @@ service cloud.firestore {
           && request.auth.token.email == '20225216@hallym.ac.kr';
     }
 
-    // 클라이언트가 조작되어 잘못된 타입의 필드를 써도 다른 사용자의 홈 피드가
-    // 캐스팅 오류로 깨지지 않도록, 서버 측에서 최소한의 타입을 검증한다.
+    function isCloudinaryUrl(value) {
+      return value is string
+          && value.size() <= 2048
+          && value.matches('^https://res\\.cloudinary\\.com/.+');
+    }
+
+    function hasValidItemImages(images) {
+      return images is list
+          && images.size() <= 5
+          && (images.size() < 1 || isCloudinaryUrl(images[0]))
+          && (images.size() < 2 || isCloudinaryUrl(images[1]))
+          && (images.size() < 3 || isCloudinaryUrl(images[2]))
+          && (images.size() < 4 || isCloudinaryUrl(images[3]))
+          && (images.size() < 5 || isCloudinaryUrl(images[4]));
+    }
+
+    // 클라이언트 폼의 길이 제한과 서버 제어 필드의 초기값을 규칙에서도
+    // 강제한다. APK를 변조하거나 REST API를 직접 호출해도 우회할 수 없다.
     function isValidItemData(data) {
-      return data.title is string
+      return data.keys().hasOnly([
+            'title', 'description', 'location', 'locationDetail', 'type',
+            'category', 'authorUid', 'authorNickname', 'resolved',
+            'imageUrls', 'searchTokens', 'reportCount', 'viewCount', 'hidden',
+            'createdAt'
+          ])
+          && data.title is string
+          && data.title.size() > 0
+          && data.title.size() <= 40
           && data.description is string
+          && data.description.size() <= 1000
           && data.location is string
+          && data.location.size() > 0
+          && data.location.size() <= 80
           && data.locationDetail is string
-          && data.type is string
-          && data.category is string
+          && data.locationDetail.size() <= 50
+          && data.type in ['found', 'lost']
+          && data.category in [
+               '전자기기', '지갑/카드/현금', '가방', '의류', '도서/문구',
+               '액세서리', '기타'
+             ]
+          && data.authorUid is string
           && data.authorNickname is string
+          && data.authorNickname.size() > 0
+          && data.authorNickname.size() <= 12
           && data.resolved is bool
-          && data.imageUrls is list
-          // 서버 검색용 2-gram 배열(lib/services/search_tokens.dart).
-          && (!('searchTokens' in data) || data.searchTokens is list);
+          && hasValidItemImages(data.imageUrls)
+          && data.searchTokens is list
+          && data.searchTokens.size() <= 600
+          && data.reportCount is int
+          && data.reportCount >= 0
+          && data.viewCount is int
+          && data.viewCount >= 0
+          && data.hidden is bool
+          && data.createdAt is timestamp;
     }
 
     // 수정 시에는 "존재하는 필드의 타입이 올바른지"만 검증한다. 예전 버전
@@ -42,36 +90,79 @@ service cloud.firestore {
     // 처리(batch)에 한 건이라도 끼어 있으면 전체가 실패한다. 잘못된 타입이
     // 새로 들어오는 것은 여기서 여전히 막는다.
     function isValidItemPatch(data) {
-      return (!('title' in data) || data.title is string)
-          && (!('description' in data) || data.description is string)
-          && (!('location' in data) || data.location is string)
-          && (!('locationDetail' in data) || data.locationDetail is string)
-          && (!('type' in data) || data.type is string)
-          && (!('category' in data) || data.category is string)
-          && (!('authorNickname' in data) || data.authorNickname is string)
+      return (!('title' in data)
+              || (data.title is string && data.title.size() > 0
+                  && data.title.size() <= 40))
+          && (!('description' in data)
+              || (data.description is string && data.description.size() <= 1000))
+          && (!('location' in data)
+              || (data.location is string && data.location.size() > 0
+                  && data.location.size() <= 80))
+          && (!('locationDetail' in data)
+              || (data.locationDetail is string && data.locationDetail.size() <= 50))
+          && (!('type' in data) || data.type in ['found', 'lost'])
+          && (!('category' in data) || data.category in [
+               '전자기기', '지갑/카드/현금', '가방', '의류', '도서/문구',
+               '액세서리', '기타'
+             ])
+          && (!('authorNickname' in data)
+              || (data.authorNickname is string
+                  && data.authorNickname.size() > 0
+                  && data.authorNickname.size() <= 12))
           && (!('resolved' in data) || data.resolved is bool)
-          && (!('imageUrls' in data) || data.imageUrls is list)
-          && (!('searchTokens' in data) || data.searchTokens is list);
+          && (!('imageUrls' in data) || hasValidItemImages(data.imageUrls))
+          && (!('searchTokens' in data)
+              || (data.searchTokens is list && data.searchTokens.size() <= 600));
+    }
+
+    function isHidden(data) {
+      return 'hidden' in data && data.hidden == true;
+    }
+
+    function hasBlocked(blockerUid, blockedUid) {
+      return exists(/databases/$(database)/documents/blocks/$(blockerUid))
+          && get(/databases/$(database)/documents/blocks/$(blockerUid)).data.blockedUsers is map
+          && blockedUid in
+             get(/databases/$(database)/documents/blocks/$(blockerUid)).data.blockedUsers;
     }
 
     match /items/{itemId} {
-      // 읽기는 누구나, 쓰기는 한림대 웹메일(@hallym.ac.kr)로 이메일 인증까지 완료한 로그인 사용자만 허용
-      // (클라이언트 폼 검증은 우회 가능하므로 서버 측 규칙에서 도메인을 다시 검증한다)
-      allow read: if true;
+      // 숨김 글은 작성자와 관리자만 단건 조회할 수 있다. 일반 목록 쿼리는
+      // hidden == false 조건을 반드시 포함해야 규칙이 쿼리를 허용한다.
+      allow get: if isVerifiedHallymUser()
+                 && (!exists(/databases/$(database)/documents/items/$(itemId))
+                     || !isHidden(resource.data)
+                     || resource.data.authorUid == request.auth.uid
+                     || isAdmin());
+      allow list: if isVerifiedHallymUser()
+                  && resource.data.hidden == false;
       allow create: if isVerifiedHallymUser()
                     && request.resource.data.authorUid == request.auth.uid
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.reportCount == 0
+                    && request.resource.data.viewCount == 0
+                    && request.resource.data.hidden == false
                     && isValidItemData(request.resource.data);
-      // 작성자는 자유롭게 수정 가능. 그 외 사용자는 신고 시 reportCount, 조회 시 viewCount만
-      // 1씩 증가시킬 수 있다 (값 위조를 막기 위해 정확히 +1인지 검증한다).
+      // 작성자도 편집 필드만 수정할 수 있다. 관리자 전용 hidden과 서버 카운터,
+      // authorUid/createdAt은 절대로 작성자 분기로 바꿀 수 없다.
       allow update: if isVerifiedHallymUser()
                     && (
                       (resource.data.authorUid == request.auth.uid
                        && request.resource.data.authorUid == resource.data.authorUid
+                       && request.resource.data.diff(resource.data).affectedKeys()
+                           .hasOnly([
+                             'title', 'description', 'location', 'locationDetail',
+                             'type', 'category', 'authorNickname', 'resolved',
+                             'imageUrls', 'searchTokens'
+                           ])
                        && isValidItemPatch(request.resource.data))
                       || (
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reportCount'])
                         && request.resource.data.reportCount ==
                             (('reportCount' in resource.data) ? resource.data.reportCount : 0) + 1
+                        && !exists(/databases/$(database)/documents/reports/$(itemId + '_' + request.auth.uid))
+                        && existsAfter(/databases/$(database)/documents/reports/$(itemId + '_' + request.auth.uid))
+                        && getAfter(/databases/$(database)/documents/reports/$(itemId + '_' + request.auth.uid)).data.reporterUid == request.auth.uid
                       )
                       || (
                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount'])
@@ -83,11 +174,14 @@ service cloud.firestore {
                       || (
                         isAdmin()
                         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['hidden', 'reportCount'])
+                        && request.resource.data.hidden is bool
+                        && request.resource.data.reportCount is int
+                        && request.resource.data.reportCount >= 0
                       )
                     );
       // 작성자 본인 외에, 관리자는 신고 검토 결과로 어떤 글이든 삭제할 수 있다.
-      allow delete: if isVerifiedHallymUser()
-                    && (resource.data.authorUid == request.auth.uid || isAdmin());
+      // Cloudinary 원본과 채팅 상태를 함께 정리하는 백엔드만 삭제할 수 있다.
+      allow delete: if false;
     }
 
     // 신고: 신고자 본인 명의로만 생성 가능. 문서ID를 '{itemId}_{reporterUid}'로 고정해
@@ -96,7 +190,33 @@ service cloud.firestore {
     match /reports/{reportId} {
       allow create: if isVerifiedHallymUser()
                     && request.resource.data.reporterUid == request.auth.uid
-                    && reportId == request.resource.data.itemId + '_' + request.auth.uid;
+                    && request.resource.data.itemId is string
+                    && reportId == request.resource.data.itemId + '_' + request.auth.uid
+                    && request.resource.data.keys().hasOnly([
+                         'itemId',
+                         'itemTitle',
+                         'authorUid',
+                         'authorNickname',
+                         'reporterUid',
+                         'reason',
+                         'createdAt'
+                       ])
+                    && request.resource.data.reason in
+                       ['부적절한 내용', '스팸/광고', '사기 의심', '기타']
+                    && request.resource.data.createdAt == request.time
+                    && exists(/databases/$(database)/documents/items/$(request.resource.data.itemId))
+                    && request.auth.uid !=
+                       get(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.authorUid
+                    && request.resource.data.itemTitle ==
+                       get(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.title
+                    && request.resource.data.authorUid ==
+                       get(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.authorUid
+                    && request.resource.data.authorNickname ==
+                       get(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.authorNickname
+                    && getAfter(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.reportCount ==
+                       (('reportCount' in get(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data)
+                        ? get(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.reportCount
+                        : 0) + 1;
       // 신고 큐 열람/처리(삭제)는 관리자만. 위변조 방지를 위해 수정은 항상 막는다.
       allow read, delete: if isAdmin();
       allow update: if false;
@@ -122,32 +242,75 @@ service cloud.firestore {
 
     // 실명/학과/학번 등 민감 정보는 본인만 조회/생성/삭제(회원탈퇴) 가능하고, 수정은 불가(위변조 방지).
     match /userPrivate/{uid} {
-      allow read, create, delete: if request.auth != null && request.auth.uid == uid;
+      allow read, delete: if isHallymEmailAccount() && request.auth.uid == uid;
+      allow create: if isHallymEmailAccount()
+                    && request.auth.uid == uid
+                    && request.resource.data.keys().hasOnly([
+                         'nickname', 'realName', 'department', 'studentId'
+                       ])
+                    && request.resource.data.nickname is string
+                    && request.resource.data.nickname.size() > 0
+                    && request.resource.data.nickname.size() <= 12
+                    && request.resource.data.realName is string
+                    && request.resource.data.realName.size() > 0
+                    && request.resource.data.realName.size() <= 40
+                    && request.resource.data.department is string
+                    && request.resource.data.department.size() > 0
+                    && request.resource.data.department.size() <= 80
+                    && request.resource.data.studentId is string
+                    && request.resource.data.studentId.size() >= 4
+                    && request.resource.data.studentId.size() <= 20
+                    && request.auth.token.email ==
+                       request.resource.data.studentId + '@hallym.ac.kr';
       allow update: if false;
     }
 
     // 차단 목록: 본인만 조회/수정 가능. { blockedUsers: { uid: nickname } } 형태.
     match /blocks/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read: if isVerifiedHallymUser() && request.auth.uid == uid;
+      allow write: if isVerifiedHallymUser()
+                   && request.auth.uid == uid
+                   && request.resource.data.keys().hasOnly(['blockedUsers'])
+                   && request.resource.data.blockedUsers is map
+                   && request.resource.data.blockedUsers.keys().size() <= 500;
     }
 
     // 관심글(찜) 목록: 본인만 조회/수정 가능. { itemIds: [itemId, ...] } 형태.
     match /bookmarks/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read: if isVerifiedHallymUser() && request.auth.uid == uid;
+      allow write: if isVerifiedHallymUser()
+                   && request.auth.uid == uid
+                   && request.resource.data.keys().hasOnly(['itemIds'])
+                   && request.resource.data.itemIds is list
+                   && request.resource.data.itemIds.size() <= 500;
     }
 
     // 공개 닉네임/프로필 사진: 차단 목록·알림·채팅 등 다른 사용자 화면에서
     // 실시간으로 최신 정보를 조회할 수 있도록 공개한다. 본인만 쓸 수 있다.
     match /userPublicProfiles/{uid} {
-      allow read: if request.auth != null;
-      allow create, update: if request.auth != null
-                  && request.auth.uid == uid
-                  && request.resource.data.keys().hasOnly(['nickname', 'photoUrl'])
-                  && (!('nickname' in request.resource.data)
-                      || request.resource.data.nickname is string)
-                  && (!('photoUrl' in request.resource.data)
-                      || request.resource.data.photoUrl is string);
-      allow delete: if request.auth != null && request.auth.uid == uid;
+      allow read: if isVerifiedHallymUser();
+      allow create: if isHallymEmailAccount()
+                    && request.auth.uid == uid
+                    && request.resource.data.keys().hasOnly(['nickname', 'photoUrl'])
+                    && request.resource.data.nickname is string
+                    && request.resource.data.nickname.size() > 0
+                    && request.resource.data.nickname.size() <= 12
+                    && (!('photoUrl' in request.resource.data)
+                        || (request.resource.data.photoUrl is string
+                            && (request.resource.data.photoUrl == ''
+                                || isCloudinaryUrl(request.resource.data.photoUrl))));
+      allow update: if isVerifiedHallymUser()
+                    && request.auth.uid == uid
+                    && request.resource.data.keys().hasOnly(['nickname', 'photoUrl'])
+                    && (!('nickname' in request.resource.data)
+                        || (request.resource.data.nickname is string
+                            && request.resource.data.nickname.size() > 0
+                            && request.resource.data.nickname.size() <= 12))
+                    && (!('photoUrl' in request.resource.data)
+                        || (request.resource.data.photoUrl is string
+                            && (request.resource.data.photoUrl == ''
+                                || isCloudinaryUrl(request.resource.data.photoUrl))));
+      allow delete: if isHallymEmailAccount() && request.auth.uid == uid;
     }
 
     // 계정 단위 개인 설정(튜토리얼 확인 여부, 알림 종류별 켜고 끄기 등).
@@ -156,8 +319,8 @@ service cloud.firestore {
       return !(key in data) || data[key] is bool;
     }
     match /userSettings/{uid} {
-      allow read: if request.auth != null && request.auth.uid == uid;
-      allow write: if request.auth != null
+      allow read: if isVerifiedHallymUser() && request.auth.uid == uid;
+      allow write: if isVerifiedHallymUser()
                   && request.auth.uid == uid
                   && request.resource.data.keys().hasOnly([
                        'onboardingSeen',
@@ -181,53 +344,210 @@ service cloud.firestore {
     // 모든 로그인 사용자에게 읽기를 열어둬야 했고, 그 결과 아무나 남의 저장
     // 키워드를 uid와 함께 열람할 수 있었다. 지금은 Admin SDK를 쓰는 백엔드
     // (verify_backend/api/notify-matches.js)가 매칭하므로 본인만 읽으면 된다.
-    // { keywords: [string, ...], categories: [string, ...] } 형태.
+    // { keywords: [string, ...], keywordTokens: [string, ...], categories: [string, ...] } 형태.
     match /savedSearches/{uid} {
-      allow read: if request.auth != null && request.auth.uid == uid;
-      allow write: if request.auth != null
+      allow read: if isVerifiedHallymUser() && request.auth.uid == uid;
+      allow write: if isVerifiedHallymUser()
                   && request.auth.uid == uid
-                  && request.resource.data.keys().hasOnly(['keywords', 'categories'])
+                  && request.resource.data.keys().hasOnly([
+                       'keywords', 'keywordTokens', 'categories'
+                     ])
                   && (!('keywords' in request.resource.data)
-                      || request.resource.data.keywords is list)
+                      || (request.resource.data.keywords is list
+                          && request.resource.data.keywords.size() <= 20))
+                  && (!('keywordTokens' in request.resource.data)
+                      || (request.resource.data.keywordTokens is list
+                          && request.resource.data.keywordTokens.size() <= 20))
                   && (!('categories' in request.resource.data)
-                      || request.resource.data.categories is list);
+                      || (request.resource.data.categories is list
+                          && request.resource.data.categories.size() <= 7));
     }
 
-    // 채팅방: 참여자 2명만 읽기/쓰기 가능. 차단 관계여도 생성 자체는 막지 않는다
-    // (차단 여부가 오류로 드러나지 않도록, 대신 차단한 쪽 클라이언트가 목록에서
-    // 걸러내는 방식으로 처리한다 — messages와 동일한 원칙).
+    // 채팅방: 인증된 참여자 2명만 읽기/쓰기 가능하고 양방향 차단 관계에서는
+    // 새 방 생성과 메시지 전송을 모두 막는다.
     match /chats/{chatId} {
+      function fieldChanged(field) {
+        return request.resource.data.diff(resource.data).affectedKeys().hasAny([field]);
+      }
+
+      function otherParticipantUid() {
+        return resource.data.participants[0] == request.auth.uid
+            ? resource.data.participants[1]
+            : resource.data.participants[0];
+      }
+
+      // clearedAt/lastReadAt/typing/닉네임/실명 공개처럼 사용자별 map으로 저장하는
+      // 필드는 자신의 uid 항목만 바꿀 수 있다. map이 없는 예전 채팅 문서도
+      // 첫 업데이트 때 자신의 항목을 추가할 수 있도록 legacy 형태를 허용한다.
+      function onlyOwnMapEntryChanged(field) {
+        return !fieldChanged(field)
+            || (
+              request.resource.data[field] is map
+              && (
+                (!(field in resource.data)
+                 && request.resource.data[field].keys().hasOnly([request.auth.uid]))
+                || (resource.data[field] is map
+                    && request.resource.data[field].diff(resource.data[field])
+                       .affectedKeys().hasOnly([request.auth.uid]))
+              )
+            );
+      }
+
+      function validUnreadCountUpdate() {
+        let otherUid = otherParticipantUid();
+        let oldOtherCount =
+            ('unreadCount' in resource.data && otherUid in resource.data.unreadCount)
+            ? resource.data.unreadCount[otherUid]
+            : 0;
+        return !fieldChanged('unreadCount')
+            || (
+              request.resource.data.unreadCount is map
+              && (
+                // 읽음 처리·나가기는 자기 카운트만 0으로 만든다.
+                (request.resource.data.unreadCount
+                    .diff(('unreadCount' in resource.data)
+                          ? resource.data.unreadCount : {})
+                    .affectedKeys().hasOnly([request.auth.uid])
+                 && request.resource.data.unreadCount[request.auth.uid] == 0)
+                // 메시지 전송은 상대 카운트만 1~5 증가시킨다(다중 사진 상한 5).
+                || (request.resource.data.unreadCount
+                      .diff(('unreadCount' in resource.data)
+                            ? resource.data.unreadCount : {})
+                      .affectedKeys().hasOnly([otherUid])
+                    && fieldChanged('lastMessage')
+                    && fieldChanged('lastMessageAt')
+                    && request.resource.data.unreadCount[otherUid] is int
+                    && request.resource.data.unreadCount[otherUid] > oldOtherCount
+                    && request.resource.data.unreadCount[otherUid] <= oldOtherCount + 5)
+              )
+            );
+      }
+
+      function validResolutionStatusUpdate() {
+        return !fieldChanged('resolutionStatus')
+            || (
+              request.resource.data.resolutionStatus in
+                  ['none', 'pending', 'confirmed', 'done']
+              && (
+                // 게시글 작성자는 요청·완료·원복을 수행할 수 있다.
+                (request.auth.uid == resource.data.itemAuthorUid
+                 && request.resource.data.resolutionStatus in
+                    ['none', 'pending', 'done']
+                 && !(request.resource.data.resolutionStatus == 'pending'
+                      && 'itemDeleted' in request.resource.data
+                      && request.resource.data.itemDeleted == true))
+                // 상대 참여자는 작성자의 pending 요청만 confirmed로 확인한다.
+                || (request.auth.uid != resource.data.itemAuthorUid
+                    && resource.data.resolutionStatus == 'pending'
+                    && request.resource.data.resolutionStatus == 'confirmed')
+              )
+            );
+      }
+
+      function validItemDeletedUpdate() {
+        return !fieldChanged('itemDeleted')
+            || (request.auth.uid == resource.data.itemAuthorUid
+                && request.resource.data.itemDeleted == true);
+      }
+
+      function peerBlockedCurrentUser() {
+        return hasBlocked(otherParticipantUid(), request.auth.uid)
+            || hasBlocked(request.auth.uid, otherParticipantUid());
+      }
+
       // 채팅 시작 시 존재 여부를 get()으로 먼저 확인하므로, 문서가 아직 없을 때도 조회는 허용한다.
-      allow get: if request.auth != null
+      allow get: if isVerifiedHallymUser()
                  && (!exists(/databases/$(database)/documents/chats/$(chatId))
                      || request.auth.uid in resource.data.participants);
-      allow list: if request.auth != null && request.auth.uid in resource.data.participants;
-      allow create: if request.auth != null
-                    && request.auth.uid in request.resource.data.participants
-                    && request.resource.data.participants.size() == 2;
+      allow list: if isVerifiedHallymUser()
+                  && request.auth.uid in resource.data.participants;
+      allow create: if isVerifiedHallymUser()
+                    && request.resource.data.itemId is string
+                    && exists(/databases/$(database)/documents/items/$(request.resource.data.itemId))
+                    && request.resource.data.itemAuthorUid ==
+                       get(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.authorUid
+                    && request.auth.uid != request.resource.data.itemAuthorUid
+                    && request.resource.data.participants is list
+                    && request.resource.data.participants.size() == 2
+                    && request.resource.data.participants.hasOnly([
+                         request.auth.uid,
+                         request.resource.data.itemAuthorUid
+                       ])
+                    && (chatId == request.resource.data.itemId + '_' +
+                                  request.auth.uid + '_' + request.resource.data.itemAuthorUid
+                        || chatId == request.resource.data.itemId + '_' +
+                                     request.resource.data.itemAuthorUid + '_' + request.auth.uid)
+                    && request.resource.data.itemTitle ==
+                       get(/databases/$(database)/documents/items/$(request.resource.data.itemId)).data.title
+                    && request.resource.data.resolutionStatus == 'none'
+                    && !hasBlocked(request.resource.data.itemAuthorUid, request.auth.uid)
+                    && !hasBlocked(request.auth.uid, request.resource.data.itemAuthorUid);
       // 업데이트는 대화 진행 중 실제로 바뀌는 필드만 허용한다(참여자/글 정보 등은 생성 후 불변).
       // clearedAt: 카카오톡 방식 "나가기" — 참여자별로 "이 시점 이전 대화는 내 화면에서 숨김" 마커.
-      allow update: if request.auth != null
+      allow update: if isVerifiedHallymUser()
                     && request.auth.uid in resource.data.participants
                     && request.resource.data.diff(resource.data).affectedKeys()
-                        .hasOnly(['lastMessage', 'lastMessageAt', 'clearedAt', 'lastReadAt', 'unreadCount', 'revealedRealNames', 'resolutionStatus', 'participantNicknames', 'typing', 'itemDeleted']);
-      // 회원 탈퇴 시 본인이 속한 채팅방을 정리할 수 있도록 참여자 본인 삭제만 허용한다.
-      allow delete: if request.auth != null && request.auth.uid in resource.data.participants;
+                        .hasOnly(['lastMessage', 'lastMessageAt', 'clearedAt', 'lastReadAt', 'unreadCount', 'revealedRealNames', 'resolutionStatus', 'participantNicknames', 'typing', 'itemDeleted'])
+                    && onlyOwnMapEntryChanged('clearedAt')
+                    && onlyOwnMapEntryChanged('lastReadAt')
+                    && onlyOwnMapEntryChanged('typing')
+                    && onlyOwnMapEntryChanged('participantNicknames')
+                    && onlyOwnMapEntryChanged('revealedRealNames')
+                    && validUnreadCountUpdate()
+                    && validResolutionStatusUpdate()
+                    && validItemDeletedUpdate()
+                    && (!(fieldChanged('lastMessage') || fieldChanged('lastMessageAt'))
+                        || !peerBlockedCurrentUser());
+      // 채팅은 두 사용자가 공유하는 기록이다. 정상 "나가기"는 clearedAt으로
+      // 본인 화면에서만 숨기므로, 참가자 한 명이 방 전체를 지우는 것은 막는다.
+      allow delete: if false;
 
       match /messages/{messageId} {
-        allow read: if request.auth != null
+        function messagePeerUid() {
+          let participants =
+              get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+          return participants[0] == request.auth.uid
+              ? participants[1]
+              : participants[0];
+        }
+
+        function messagePeerBlockedCurrentUser() {
+          return hasBlocked(messagePeerUid(), request.auth.uid)
+              || hasBlocked(request.auth.uid, messagePeerUid());
+        }
+
+        function validMessage(data) {
+          return data.senderUid == request.auth.uid
+              && data.createdAt == request.time
+              && (
+                (data.type == 'text'
+                 && data.keys().hasOnly(['senderUid', 'type', 'text', 'createdAt'])
+                 && data.text is string
+                 && data.text.size() > 0
+                 && data.text.size() <= 2000)
+                || (data.type == 'image'
+                    && data.keys().hasOnly([
+                         'senderUid', 'type', 'imageUrl', 'createdAt'
+                       ])
+                    && data.imageUrl is string
+                    && data.imageUrl.size() <= 2048
+                    && data.imageUrl.matches(
+                         '^https://res\\.cloudinary\\.com/.+'
+                       ))
+              );
+        }
+
+        allow read: if isVerifiedHallymUser()
                     && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
-        // 차단된 상대에게 보내는 메시지도 쓰기 자체는 항상 허용한다. 발신자에게는
-        // 정상 전송처럼 보이고, 실제로는 각자 자신의 차단 목록(blocks/{uid})을
-        // 기준으로 상대의 메시지를 클라이언트에서 걸러내므로 차단한 쪽에는
-        // 노출되지 않는다.
-        allow create: if request.auth != null
+        // 차단 이후 새 메시지는 서버에서 거부한다. 클라이언트 필터만으로 숨기면
+        // 변조된 앱/REST 호출로 차단 메시지를 계속 읽을 수 있다.
+        allow create: if isVerifiedHallymUser()
                       && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants
-                      && request.resource.data.senderUid == request.auth.uid;
+                      && !messagePeerBlockedCurrentUser()
+                      && validMessage(request.resource.data);
         allow update: if false;
-        // 회원 탈퇴 시 본인이 속한 채팅방의 메시지까지 정리할 수 있도록 참여자 본인 삭제만 허용한다.
-        allow delete: if request.auth != null
-                      && request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        // 자기 메시지라도 상대방과 공유된 기록이므로 클라이언트 삭제를 허용하지 않는다.
+        allow delete: if false;
       }
     }
 
@@ -238,13 +558,23 @@ service cloud.firestore {
     match /reportAppeals/{itemId} {
       // 아직 이의제기를 등록하지 않은 상태(문서 없음)도 클라이언트가
       // 오류 없이 확인할 수 있어야, "제출하기" 버튼을 보여줄지 판단할 수 있다.
-      allow read: if request.auth != null
+      allow read: if isVerifiedHallymUser()
                   && (!exists(/databases/$(database)/documents/reportAppeals/$(itemId))
                       || resource.data.authorUid == request.auth.uid);
-      allow create: if request.auth != null
+      allow create: if isVerifiedHallymUser()
                     && request.resource.data.authorUid == request.auth.uid
                     && request.resource.data.itemId == itemId
                     && request.resource.data.status == 'pending'
+                    && request.resource.data.keys().hasOnly([
+                         'itemId', 'itemTitle', 'authorUid', 'reason', 'status',
+                         'createdAt'
+                       ])
+                    && request.resource.data.itemTitle ==
+                       get(/databases/$(database)/documents/items/$(itemId)).data.title
+                    && request.resource.data.reason is string
+                    && request.resource.data.reason.size() > 0
+                    && request.resource.data.reason.size() <= 1000
+                    && request.resource.data.createdAt == request.time
                     && get(/databases/$(database)/documents/items/$(itemId)).data.authorUid == request.auth.uid;
       allow update, delete: if false;
     }
@@ -253,14 +583,30 @@ service cloud.firestore {
     // 무엇을 보냈는지 다시 볼 필요가 없으므로 열람/수정/삭제는 관리자만.
     match /bugReports/{bugReportId} {
       allow create: if isVerifiedHallymUser()
-                    && request.resource.data.reporterUid == request.auth.uid;
+                    && request.resource.data.reporterUid == request.auth.uid
+                    && request.resource.data.keys().hasOnly([
+                         'reporterUid', 'reporterEmail', 'reporterNickname',
+                         'content', 'createdAt'
+                       ])
+                    && request.resource.data.reporterEmail == request.auth.token.email
+                    && request.resource.data.reporterNickname is string
+                    && request.resource.data.reporterNickname.size() <= 12
+                    && request.resource.data.content is string
+                    && request.resource.data.content.size() > 0
+                    && request.resource.data.content.size() <= 1000
+                    && request.resource.data.createdAt == request.time;
       allow read, update, delete: if isAdmin();
     }
 
     // FCM 푸시 토큰: 본인만 자기 문서를 읽고 쓸 수 있다. 실제 발송은 Vercel
     // 백엔드(Admin SDK)가 규칙을 우회해 읽으므로 다른 클라이언트엔 열지 않는다.
     match /fcmTokens/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read: if isVerifiedHallymUser() && request.auth.uid == uid;
+      allow write: if isVerifiedHallymUser()
+                   && request.auth.uid == uid
+                   && request.resource.data.keys().hasOnly(['tokens'])
+                   && request.resource.data.tokens is list
+                   && request.resource.data.tokens.size() <= 20;
     }
 
     // 알림: 수신자 본인만 읽기/삭제/읽음처리 가능.
@@ -271,17 +617,56 @@ service cloud.firestore {
     // 만들어 보낼 수 있었다(예: 가짜 '신고 검토 결과'). 지금 클라이언트가
     // 직접 만드는 알림은 채팅 첫 문의뿐이고, 신고 처리 결과는 관리자만,
     // 키워드 알림은 백엔드(Admin SDK)가 만든다.
+    function isValidChatStartedNotification(data) {
+      return data.type == 'chat_started'
+          && data.senderUid == request.auth.uid
+          && data.recipientUid is string
+          && data.recipientUid != request.auth.uid
+          && data.chatId is string
+          && data.read == false
+          && data.createdAt == request.time
+          && data.keys().hasOnly([
+               'recipientUid', 'senderUid', 'senderNickname', 'type', 'itemId',
+               'itemTitle', 'chatId', 'read', 'createdAt'
+             ])
+          && exists(/databases/$(database)/documents/chats/$(data.chatId))
+          && request.auth.uid in
+             get(/databases/$(database)/documents/chats/$(data.chatId)).data.participants
+          && data.recipientUid in
+             get(/databases/$(database)/documents/chats/$(data.chatId)).data.participants
+          && !hasBlocked(data.recipientUid, request.auth.uid)
+          && !hasBlocked(request.auth.uid, data.recipientUid);
+    }
+
     match /notifications/{notificationId} {
-      allow read, update, delete: if request.auth != null
-                                  && resource.data.recipientUid == request.auth.uid;
-      allow create: if request.auth != null
-                    && request.resource.data.senderUid == request.auth.uid
+      allow read, delete: if isVerifiedHallymUser()
+                          && resource.data.recipientUid == request.auth.uid;
+      allow update: if isVerifiedHallymUser()
+                    && resource.data.recipientUid == request.auth.uid
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['read'])
+                    && request.resource.data.read == true;
+      allow create: if isVerifiedHallymUser()
                     && (
-                      request.resource.data.type == 'chat_started'
+                      isValidChatStartedNotification(request.resource.data)
                       || (isAdmin()
                           && request.resource.data.type in
                              ['item_hidden', 'item_removed', 'report_result'])
                     );
+    }
+
+    // 동일 원본 이벤트의 푸시가 API 재시도·연타로 중복 발송되지 않도록 서버가
+    // 예약하는 내부 문서. Admin SDK만 접근하며 클라이언트에는 전면 비공개다.
+    match /pushDeliveries/{deliveryId} {
+      allow read, write: if false;
+    }
+
+    // 백엔드 rate limit·키워드 알림 멱등성 문서. Admin SDK만 접근한다.
+    match /rateLimits/{limitId} {
+      allow read, write: if false;
+    }
+    match /keywordDeliveries/{deliveryId} {
+      allow read, write: if false;
     }
   }
 }

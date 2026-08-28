@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
@@ -11,58 +10,79 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'firebase_options.dart';
 import 'screens/auth_gate.dart';
 import 'services/analytics_service.dart';
+import 'services/backend_http.dart';
 import 'services/push_notifications.dart';
 import 'theme/app_theme.dart';
 import 'widgets/app_user_data.dart';
+import 'widgets/startup_failure_app.dart';
 
 void main() {
-  runZonedGuarded(
-    () async {
-      WidgetsFlutterBinding.ensureInitialized();
+  runZonedGuarded(() {
+    WidgetsFlutterBinding.ensureInitialized();
+    // Firebase 네이티브 초기화를 기다리기 전에 가벼운 첫 프레임을 먼저
+    // 그린다. 초기화가 느린 기기에서도 검은 화면으로 멈춘 것처럼 보이지 않고,
+    // Android가 시작 프레임 수백 개를 건너뛰는 현상도 줄어든다.
+    runApp(const StartupLoadingApp());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_bootstrap());
+    });
+  }, (error, stack) => unawaited(_recordFatalError(error, stack)));
+}
+
+Future<void> _bootstrap() async {
+  try {
+    if (Firebase.apps.isEmpty) {
       await Firebase.initializeApp(
         options: DefaultFirebaseOptions.currentPlatform,
       );
+    }
 
-      // 이 앱에서 온 요청인지 검증해, 학번 패턴을 순회하며 임의 주소로 인증/재설정
-      // 메일을 대량 발송시키는 등의 남용을 막는다. Android는 Play Integrity,
-      // iOS는 App Attest를 쓰고, 아직 콘솔에서 활성화하지 않았다면(Play
-      // Integrity API 활성화, SHA-256 지문 등록 등 수동 설정이 필요하다) 토큰
-      // 발급이 실패할 수 있는데, 그래도 앱 자체는 계속 정상 동작해야 하므로
-      // 실패를 무시한다 — 서버 쪽도 검증 실패를 당장 차단하지 않고 로그만
-      // 남기도록 되어 있다(APP_CHECK_ENFORCE 환경변수로 나중에 강제할 수 있다).
-      try {
-        await FirebaseAppCheck.instance.activate(
-          providerAndroid: AndroidPlayIntegrityProvider(),
-          providerApple: AppleAppAttestWithDeviceCheckFallbackProvider(),
-        );
-      } catch (_) {}
+    // Crashlytics는 웹을 지원하지 않는다. Flutter 프레임워크가 잡아내는
+    // 에러(위젯 build 중 예외 등)와, 프레임워크 밖(예: 마이크로태스크)에서
+    // 나는 에러 둘 다 연결해야 실제로 발생하는 크래시를 놓치지 않는다.
+    if (!kIsWeb) {
+      FlutterError.onError =
+          FirebaseCrashlytics.instance.recordFlutterFatalError;
+      PlatformDispatcher.instance.onError = (error, stack) {
+        unawaited(_recordFatalError(error, stack));
+        return true;
+      };
+    }
 
-      // Crashlytics는 웹을 지원하지 않는다. Flutter 프레임워크가 잡아내는
-      // 에러(위젯 build 중 예외 등)와, 프레임워크 밖(예: 마이크로태스크)에서
-      // 나는 에러 둘 다 연결해야 실제로 발생하는 크래시를 놓치지 않는다.
-      if (!kIsWeb) {
-        FlutterError.onError =
-            FirebaseCrashlytics.instance.recordFlutterFatalError;
-        PlatformDispatcher.instance.onError = (error, stack) {
-          FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
-          return true;
-        };
-      }
+    runApp(const MyApp());
+    // App Check 토큰·FCM 토큰 네트워크 요청은 첫 프레임을 막지 않는다. 앱 UI를
+    // 먼저 띄운 뒤 순서대로 준비해 콜드 스타트의 긴 정지와 skipped frames를 줄인다.
+    unawaited(_initializeDeferredServices());
+  } catch (error, stack) {
+    await _recordFatalError(error, stack);
+    runApp(StartupFailureApp(onRetry: _bootstrap));
+  }
+}
 
-      // 푸시 알림(권한·토큰·핸들러) 초기화. 실패해도 앱은 계속 떠야 하므로
-      // 삼켜서 처리한다(예: 웹, 권한 거부, FCM 설정 미비).
-      try {
-        await PushNotifications.init();
-      } catch (_) {}
+Future<void> _initializeDeferredServices() async {
+  // 운영 백엔드는 App Check 실패를 기본 차단한다. Android Play Integrity와
+  // iOS App Attest/DeviceCheck가 콘솔에 설정돼 있어야 인증·업로드 API가 동작한다.
+  try {
+    await ensureAppCheckActivated();
+  } catch (error, stack) {
+    await _recordFatalError(error, stack, fatal: false);
+  }
+  try {
+    await PushNotifications.init();
+  } catch (error, stack) {
+    await _recordFatalError(error, stack, fatal: false);
+  }
+}
 
-      runApp(const MyApp());
-    },
-    (error, stack) {
-      if (!kIsWeb) {
-        FirebaseCrashlytics.instance.recordError(error, stack, fatal: true);
-      }
-    },
-  );
+Future<void> _recordFatalError(
+  Object error,
+  StackTrace stack, {
+  bool fatal = true,
+}) async {
+  if (kIsWeb || Firebase.apps.isEmpty) return;
+  try {
+    await FirebaseCrashlytics.instance.recordError(error, stack, fatal: fatal);
+  } catch (_) {}
 }
 
 class MyApp extends StatelessWidget {
@@ -256,15 +276,10 @@ class MyApp extends StatelessWidget {
         ),
       ),
       navigatorKey: rootNavigatorKey,
-      // 시스템 글자 크기를 존중하되 상한을 둔다. 안드로이드는 접근성 설정에서
-      // 2.0배까지 올릴 수 있는데, 그 배율에서는 칩·세그먼트·배지처럼 높이가
-      // 정해진 컨트롤이 잘려 오히려 읽을 수 없게 된다. 1.3배까지는 각 컨트롤이
-      // 함께 커지도록 만들어 두었다(app_ui.dart 참고).
-      builder: (context, child) => MediaQuery.withClampedTextScaling(
-        minScaleFactor: 1.0,
-        maxScaleFactor: 1.3,
-        child: AppUserDataProvider(child: child ?? const SizedBox.shrink()),
-      ),
+      // 시스템 접근성 글자 크기를 앱 전역에서 제한하지 않는다. 고정 높이가
+      // 필요한 공통 컨트롤은 scaledControlHeight로 배율에 맞춰 함께 커진다.
+      builder: (context, child) =>
+          AppUserDataProvider(child: child ?? const SizedBox.shrink()),
       // 대부분의 화면 전환이 이름 없는 라우트(Navigator.push +
       // MaterialPageRoute)라 화면 이름 자체는 잡히지 않지만, 그래도 화면
       // 전환 빈도·세션 길이 같은 기본 지표는 자동으로 남는다.

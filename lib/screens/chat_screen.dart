@@ -12,6 +12,7 @@ import '../services/analytics_service.dart';
 import '../services/chat_actions.dart';
 import '../services/cloudinary_service.dart';
 import '../services/error_messages.dart';
+import '../services/media_deletion.dart';
 import '../services/image_save_service.dart';
 import '../services/push_sender.dart';
 import '../theme/app_theme.dart';
@@ -274,13 +275,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     User user, {
     required bool created,
     required String body,
+    required String messageId,
   }) {
     sendPush(
       recipientUid: widget.otherUid,
       type: created ? 'chat_started' : 'chat_message',
       title: user.displayName ?? '익명',
       body: body,
-      data: {'chatId': widget.chatId},
+      data: {'chatId': widget.chatId, 'messageId': messageId},
     );
   }
 
@@ -316,13 +318,20 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     try {
       final created = await _ensureChatExists(user);
-      final sent = await _messageSender.sendText(
+      final messageId = await _messageSender.sendText(
         chatId: widget.chatId,
         senderUid: user.uid,
         otherUid: widget.otherUid,
         text: text,
       );
-      if (sent) _pushForMessage(user, created: created, body: text);
+      if (messageId != null) {
+        _pushForMessage(
+          user,
+          created: created,
+          body: text,
+          messageId: messageId,
+        );
+      }
     } catch (e) {
       // 전송에 실패했으면 비웠던 내용을 되돌려 그대로 다시 보낼 수 있게 한다.
       if (_messageController.text.isEmpty) _messageController.text = text;
@@ -375,10 +384,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
 
     setState(() => _isSendingImage = true);
+    final urls = <String>[];
     try {
       // Cloudinary 업로드는 배치 트랜잭션 대상이 아니라 순서대로 먼저
       // 끝내둔 다음, 메시지 기록과 채팅방 메타데이터 갱신만 한 번에 묶는다.
-      final urls = <String>[];
       for (final file in picked) {
         urls.add(await uploadImageToCloudinary(file));
       }
@@ -388,11 +397,12 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final chatRef = FirebaseFirestore.instance
           .collection('chats')
           .doc(widget.chatId);
-      for (final url in urls) {
-        batch.set(_messagesRef.doc(), {
+      final messageRefs = [for (final _ in urls) _messagesRef.doc()];
+      for (var i = 0; i < urls.length; i += 1) {
+        batch.set(messageRefs[i], {
           'senderUid': user.uid,
           'type': 'image',
-          'imageUrl': url,
+          'imageUrl': urls[i],
           'createdAt': FieldValue.serverTimestamp(),
         });
       }
@@ -406,8 +416,16 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         'unreadCount.${widget.otherUid}': FieldValue.increment(urls.length),
       });
       await batch.commit();
-      _pushForMessage(user, created: created, body: lastMessageText);
+      _pushForMessage(
+        user,
+        created: created,
+        body: lastMessageText,
+        messageId: messageRefs.last.id,
+      );
     } catch (e) {
+      try {
+        await deleteUploadedMedia(urls);
+      } catch (_) {}
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('사진 전송에 실패했습니다: ${friendlyErrorMessage(e)}')),
@@ -1211,6 +1229,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     Expanded(
                       child: TextField(
                         controller: _messageController,
+                        inputFormatters: [
+                          LengthLimitingTextInputFormatter(
+                            kMaxChatMessageLength,
+                          ),
+                        ],
                         onChanged: _onMessageChanged,
                         decoration: InputDecoration(
                           hintText: '메시지 입력',

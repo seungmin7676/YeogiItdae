@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+const int kMaxChatMessageLength = 2000;
+
 /// 채팅 메시지 전송의 데이터 계층.
 ///
 /// UI(입력창 비우기·전송 중 표시)와 별개로, 같은 인스턴스에서 텍스트 전송이
@@ -17,15 +19,19 @@ class ChatMessageSender {
   bool _sendingText = false;
 
   /// 텍스트 메시지를 보낸다. 이미 전송 중이거나 내용이 비어 있으면 아무 것도
-  /// 하지 않고 false를 반환한다. 실제로 전송했으면 true.
-  Future<bool> sendText({
+  /// 하지 않고 null을 반환한다. 실제로 전송했으면 서버 검증에 쓸 메시지 ID.
+  Future<String?> sendText({
     required String chatId,
     required String senderUid,
     required String otherUid,
     required String text,
   }) async {
     final trimmed = text.trim();
-    if (_sendingText || trimmed.isEmpty) return false;
+    if (_sendingText ||
+        trimmed.isEmpty ||
+        trimmed.length > kMaxChatMessageLength) {
+      return null;
+    }
     _sendingText = true;
     try {
       final chatRef = firestore.collection('chats').doc(chatId);
@@ -45,7 +51,7 @@ class ChatMessageSender {
         'typing.$senderUid': false,
       });
       await batch.commit();
-      return true;
+      return messageRef.id;
     } finally {
       _sendingText = false;
     }

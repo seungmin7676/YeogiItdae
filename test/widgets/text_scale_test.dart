@@ -53,7 +53,7 @@ void main() {
       expect(height, greaterThan(40));
     });
 
-    testWidgets('배율이 아무리 커도 기준의 1.3배를 넘지 않는다', (tester) async {
+    testWidgets('큰 시스템 글꼴 배율을 앱이 1.3배로 낮추지 않는다', (tester) async {
       late double height;
       await tester.pumpWidget(
         _wrap(
@@ -66,7 +66,7 @@ void main() {
           ),
         ),
       );
-      expect(height, closeTo(52, 0.001));
+      expect(height, closeTo(120, 0.001));
     });
   });
 
@@ -87,10 +87,10 @@ void main() {
       expect(text.overflow, TextOverflow.ellipsis);
     });
 
-    testWidgets('글자 배율 1.3에서도 좁은 화면에서 overflow가 나지 않는다', (tester) async {
+    testWidgets('글자 배율 2.0에서도 좁은 화면에서 overflow가 나지 않는다', (tester) async {
       await tester.pumpWidget(
         _wrap(
-          textScale: 1.3,
+          textScale: 2.0,
           AppSegmented(
             labels: const ['습득 · 주웠어요', '분실 · 잃어버렸어요'],
             selectedIndex: 1,
@@ -103,11 +103,11 @@ void main() {
   });
 
   group('SegmentedToggle', () {
-    testWidgets('글자 배율 1.3에서도 overflow 없이 그려지고 선택이 동작한다', (tester) async {
+    testWidgets('글자 배율 2.0에서도 overflow 없이 그려지고 선택이 동작한다', (tester) async {
       var value = false;
       await tester.pumpWidget(
         _wrap(
-          textScale: 1.3,
+          textScale: 2.0,
           SegmentedToggle(
             leftLabel: '최신순',
             rightLabel: '조회순',

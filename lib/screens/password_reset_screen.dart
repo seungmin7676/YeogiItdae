@@ -2,9 +2,9 @@ import 'dart:convert';
 
 import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
 import '../services/backend_exception.dart';
+import '../services/backend_http.dart';
 import '../theme/app_theme.dart';
 
 /// 화면: 비밀번호 재설정 (이메일 인증과 동일한 6자리 코드 방식).
@@ -83,7 +83,7 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
       appCheckToken = (await FirebaseAppCheck.instance.getToken())?.toString();
     } catch (_) {}
 
-    final response = await http.post(
+    final response = await postBackend(
       Uri.parse('$kVerifyBackendUrl$path'),
       headers: {
         'Content-Type': 'application/json',
@@ -168,6 +168,12 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
           context,
         ).showSnackBar(SnackBar(content: Text(_sendErrorMessage(e.code))));
       }
+    } on BackendRequestTimeoutException {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('서버 응답이 늦어 요청을 중단했어요. 다시 시도해주세요.')),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(
@@ -205,6 +211,10 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
       // 응답을 기다리는 사이 화면을 닫았을 수 있다(뒤로 가기). mounted를
       // 확인하지 않으면 dispose 이후 setState로 예외가 난다.
       if (mounted) setState(() => _codeErrorText = _verifyErrorMessage(e.code));
+    } on BackendRequestTimeoutException {
+      if (mounted) {
+        setState(() => _codeErrorText = '서버 응답이 늦어 요청을 중단했어요. 다시 시도해주세요.');
+      }
     } catch (e) {
       if (mounted) {
         setState(() => _codeErrorText = '인증에 실패했습니다. 잠시 후 다시 시도해주세요.');
@@ -255,6 +265,12 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
           });
         }
       }
+    } on BackendRequestTimeoutException {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('서버 응답이 늦어 요청을 중단했어요. 다시 시도해주세요.')),
+        );
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -287,7 +303,13 @@ class _PasswordResetScreenState extends State<PasswordResetScreen> {
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
-          child: body,
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: kFormMaxWidth),
+              child: body,
+            ),
+          ),
         ),
       ),
     );

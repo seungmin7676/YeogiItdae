@@ -1,12 +1,20 @@
 const nodemailer = require('nodemailer');
-const { initAdmin, setCors, requireUser, ALLOWED_EMAIL_DOMAIN } = require('../_lib');
+const crypto = require('crypto');
+const {
+  initAdmin,
+  setCors,
+  requireUser,
+  enforceAppCheckIfConfigured,
+  enforceRateLimit,
+  ALLOWED_EMAIL_DOMAIN,
+} = require('../_lib');
 const { checkWithdrawalCooldown } = require('../_withdrawal');
 
 const RESEND_COOLDOWN_MS = 60 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
 
 function generateCode() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  return crypto.randomInt(100000, 1000000).toString();
 }
 
 module.exports = async (req, res) => {
@@ -15,6 +23,7 @@ module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method-not-allowed' });
 
   const admin = initAdmin();
+  if (!(await enforceAppCheckIfConfigured(req, res, 'send-code'))) return;
   const decoded = await requireUser(req, res);
   if (!decoded) return;
 
@@ -22,6 +31,20 @@ module.exports = async (req, res) => {
   if (!email || !email.toLowerCase().endsWith(ALLOWED_EMAIL_DOMAIN)) {
     return res.status(403).json({ error: 'domain-not-allowed' });
   }
+
+  if (
+    !(await enforceRateLimit(admin, req, res, {
+      scope: 'send-code-ip',
+      max: 20,
+      windowMs: 60 * 60 * 1000,
+    })) ||
+    !(await enforceRateLimit(admin, req, res, {
+      scope: 'send-code-user',
+      identifier: decoded.uid,
+      max: 6,
+      windowMs: 60 * 60 * 1000,
+    }))
+  ) return;
 
   // 탈퇴 후 재가입 제한. 여기가 실제 관문이다 — 가입 화면의 사전 확인
   // (signup-eligibility)을 건너뛰고 Auth 계정을 만들어도, 인증 코드를 못 받으면

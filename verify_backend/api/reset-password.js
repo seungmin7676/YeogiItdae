@@ -1,4 +1,10 @@
-const { initAdmin, setCors, ALLOWED_EMAIL_DOMAIN } = require('../_lib');
+const {
+  initAdmin,
+  setCors,
+  ALLOWED_EMAIL_DOMAIN,
+  enforceAppCheckIfConfigured,
+  enforceRateLimit,
+} = require('../_lib');
 
 module.exports = async (req, res) => {
   setCors(res);
@@ -6,6 +12,7 @@ module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method-not-allowed' });
 
   const admin = initAdmin();
+  if (!(await enforceAppCheckIfConfigured(req, res, 'reset-password'))) return;
   const email = (req.body?.email ?? '').toString().trim().toLowerCase();
   const resetToken = (req.body?.resetToken ?? '').toString().trim();
   const newPassword = (req.body?.newPassword ?? '').toString();
@@ -15,12 +22,21 @@ module.exports = async (req, res) => {
   }
   if (!resetToken) return res.status(400).json({ error: 'missing-token' });
   if (newPassword.length < 8) return res.status(400).json({ error: 'weak-password' });
+  if (!(await enforceRateLimit(admin, req, res, {
+    scope: 'reset-password-email',
+    identifier: email,
+    max: 8,
+    windowMs: 10 * 60 * 1000,
+  }))) return;
 
   let userRecord;
   try {
     userRecord = await admin.auth().getUserByEmail(email);
   } catch (e) {
-    return res.status(404).json({ error: 'user-not-found' });
+    if (e.code === 'auth/user-not-found') {
+      return res.status(404).json({ error: 'no-token' });
+    }
+    throw e;
   }
 
   const db = admin.firestore();

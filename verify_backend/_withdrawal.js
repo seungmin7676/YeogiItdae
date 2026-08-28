@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { deleteCloudinaryUrls } = require('./_cloudinary');
 
 // ---------------------------------------------------------------------------
 // 탈퇴 후 재가입 제한
@@ -19,6 +20,7 @@ const WITHDRAWAL_COOLDOWN_DAYS = 30;
 
 const COLLECTION = 'withdrawnUsers';
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DELETE_BATCH_SIZE = 450;
 
 /**
  * 이메일을 문서 ID로 쓸 해시로 바꾼다.
@@ -87,12 +89,150 @@ async function checkWithdrawalCooldown(admin, email) {
 /** 탈퇴자가 남긴 신고 기록을 지운다(reports는 클라이언트가 접근할 수 없다). */
 async function deleteReportsBy(admin, uid) {
   const db = admin.firestore();
-  const snap = await db.collection('reports').where('reporterUid', '==', uid).get();
-  if (snap.empty) return 0;
+  return deleteQueryInBatches(
+    db,
+    db.collection('reports').where('reporterUid', '==', uid),
+  );
+}
+
+/** Firestore의 500 write 제한을 넘지 않도록 같은 query를 반복해서 비운다. */
+async function deleteQueryInBatches(db, query) {
+  let deleted = 0;
+  while (true) {
+    const snap = await query.limit(DELETE_BATCH_SIZE).get();
+    if (snap.empty) return deleted;
+
+    const batch = db.batch();
+    snap.docs.forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+    deleted += snap.size;
+  }
+}
+
+/**
+ * 탈퇴 계정이 단독 소유하는 Firestore 데이터를 서버 권한으로 정리한다.
+ *
+ * 모든 삭제는 없는 문서에 다시 실행해도 안전하다. 따라서 요청이 중간에 실패해도
+ * 계정이 남아 있는 동안 같은 탈퇴 요청으로 나머지 정리를 재시도할 수 있다.
+ * 상대방과 공유하는 채팅방 껍데기는 제품 정책상 익명화해 보존한다. 다만 탈퇴자가
+ * 보낸 메시지와 계정을 직접 식별하는 uid/map 항목은 이 경계에서 제거한다.
+ */
+async function deleteUserOwnedData(admin, uid) {
+  const db = admin.firestore();
+  const ownedItems = await db.collection('items').where('authorUid', '==', uid).get();
+  const publicProfile = await db.collection('userPublicProfiles').doc(uid).get();
+  const sentMessages = await db
+    .collectionGroup('messages')
+    .where('senderUid', '==', uid)
+    .get();
+  const mediaUrls = [];
+  for (const doc of ownedItems.docs) {
+    const images = doc.data().imageUrls;
+    if (Array.isArray(images)) mediaUrls.push(...images);
+  }
+  if (publicProfile.exists && publicProfile.data().photoUrl) {
+    mediaUrls.push(publicProfile.data().photoUrl);
+  }
+  for (const doc of sentMessages.docs) {
+    if (doc.data().type === 'image' && doc.data().imageUrl) {
+      mediaUrls.push(doc.data().imageUrl);
+    }
+  }
+  // Firestore 참조를 지우기 전에 원본 미디어를 먼저 지운다. 외부 저장소 삭제가
+  // 실패하면 탈퇴를 실패 처리해 사용자가 재시도할 수 있고 고아 파일이 남지 않는다.
+  await deleteCloudinaryUrls(mediaUrls);
+
+  const ownedQueries = [
+    db.collection('notifications').where('recipientUid', '==', uid),
+    db.collection('notifications').where('senderUid', '==', uid),
+    db.collection('reports').where('reporterUid', '==', uid),
+    db.collection('reports').where('authorUid', '==', uid),
+    db.collection('bugReports').where('reporterUid', '==', uid),
+    db.collection('reportAppeals').where('authorUid', '==', uid),
+  ];
+
+  let deleted = 0;
+  for (let i = 0; i < ownedItems.docs.length; i += DELETE_BATCH_SIZE) {
+    const batch = db.batch();
+    ownedItems.docs
+      .slice(i, i + DELETE_BATCH_SIZE)
+      .forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+    deleted += Math.min(DELETE_BATCH_SIZE, ownedItems.docs.length - i);
+  }
+  // 공유 채팅방 껍데기는 상대방 화면을 위해 남기되, 탈퇴자가 보낸 텍스트와
+  // 이미지 메시지는 모두 제거한다.
+  for (let i = 0; i < sentMessages.docs.length; i += DELETE_BATCH_SIZE) {
+    const batch = db.batch();
+    sentMessages.docs
+      .slice(i, i + DELETE_BATCH_SIZE)
+      .forEach((doc) => batch.delete(doc.ref));
+    await batch.commit();
+    deleted += Math.min(DELETE_BATCH_SIZE, sentMessages.docs.length - i);
+  }
+  for (const query of ownedQueries) {
+    deleted += await deleteQueryInBatches(db, query);
+  }
+
+  const directCollections = [
+    'userPrivate',
+    'blocks',
+    'bookmarks',
+    'userPublicProfiles',
+    'userSettings',
+    'savedSearches',
+    'fcmTokens',
+  ];
   const batch = db.batch();
-  snap.docs.forEach((doc) => batch.delete(doc.ref));
+  directCollections.forEach((name) => batch.delete(db.collection(name).doc(uid)));
   await batch.commit();
-  return snap.size;
+
+  // 상대방과 공유되는 채팅방 자체는 남기되 공개 프로필 스냅샷과 실명 공개값은
+  // 익명화한다. 참가자 배열에 있던 uid도 난수 표식으로 치환해, 남은 채팅 문서가
+  // 삭제된 Auth 계정을 직접 가리키지 않게 한다.
+  const chats = await db.collection('chats').where('participants', 'array-contains', uid).get();
+  const anonymousUid = `deleted_${crypto.randomBytes(12).toString('hex')}`;
+  for (let i = 0; i < chats.docs.length; i += DELETE_BATCH_SIZE) {
+    const chatBatch = db.batch();
+    for (const doc of chats.docs.slice(i, i + DELETE_BATCH_SIZE)) {
+      const chat = doc.data();
+      const latest = await doc.ref
+        .collection('messages')
+        .orderBy('createdAt', 'desc')
+        .limit(1)
+        .get();
+      const last = latest.empty ? null : latest.docs[0].data();
+      const lastMessage = last == null
+        ? '탈퇴한 사용자의 메시지가 삭제됐습니다'
+        : last.type === 'image'
+          ? '사진을 보냈습니다'
+          : String(last.text || '메시지');
+      const update = {
+        participants: Array.isArray(chat.participants)
+          ? chat.participants.map((participant) =>
+              participant === uid ? anonymousUid : participant)
+          : [],
+        [`participantNicknames.${uid}`]: admin.firestore.FieldValue.delete(),
+        [`participantNicknames.${anonymousUid}`]: '탈퇴한 사용자',
+        [`revealedRealNames.${uid}`]: admin.firestore.FieldValue.delete(),
+        [`typing.${uid}`]: admin.firestore.FieldValue.delete(),
+        [`typing.${anonymousUid}`]: false,
+        [`unreadCount.${uid}`]: admin.firestore.FieldValue.delete(),
+        [`clearedAt.${uid}`]: admin.firestore.FieldValue.delete(),
+        [`lastReadAt.${uid}`]: admin.firestore.FieldValue.delete(),
+        lastMessage,
+        lastMessageAt: last?.createdAt || admin.firestore.FieldValue.serverTimestamp(),
+      };
+      if (chat.itemAuthorUid === uid) {
+        update.itemAuthorUid = anonymousUid;
+        update.itemDeleted = true;
+      }
+      chatBatch.update(doc.ref, update);
+    }
+    await chatBatch.commit();
+  }
+
+  return deleted + directCollections.length + chats.size;
 }
 
 module.exports = {
@@ -102,4 +242,5 @@ module.exports = {
   recordWithdrawal,
   checkWithdrawalCooldown,
   deleteReportsBy,
+  deleteUserOwnedData,
 };

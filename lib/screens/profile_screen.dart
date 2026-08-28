@@ -9,6 +9,7 @@ import '../services/admin.dart';
 import '../services/backend_exception.dart';
 import '../services/cloudinary_service.dart';
 import '../services/error_messages.dart';
+import '../services/media_deletion.dart';
 import '../services/push_notifications.dart';
 import '../services/push_sender.dart';
 import '../services/user_profile_cache.dart';
@@ -22,6 +23,7 @@ import 'admin_bug_reports_screen.dart';
 import 'admin_reports_screen.dart';
 import 'blocked_users_screen.dart';
 import 'notification_settings_screen.dart';
+import 'privacy_policy_screen.dart';
 import 'saved_items_screen.dart';
 import 'saved_searches_screen.dart';
 
@@ -42,6 +44,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
   /// 소유한(작성자이거나 참여자인) 문서만 골라 새 닉네임으로 맞춰준다.
   Future<void> _propagateNicknameChange(String uid, String newNickname) async {
     final myItems = await itemsCollection
+        .where('hidden', isEqualTo: false)
         .where('authorUid', isEqualTo: uid)
         .get();
     final myChats = await FirebaseFirestore.instance
@@ -118,8 +121,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final ref = FirebaseFirestore.instance
         .collection('userPublicProfiles')
         .doc(myUid);
+    String? newlyUploadedUrl;
+    var newPhotoPersisted = false;
 
     try {
+      final oldPhotoUrl =
+          (await ref.get()).data()?['photoUrl'] as String? ?? '';
       if (action == 'remove') {
         try {
           await ref.set({'photoUrl': ''}, SetOptions(merge: true));
@@ -131,6 +138,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
                 content: Text('사진 삭제에 실패했습니다: ${friendlyErrorMessage(e)}'),
+              ),
+            );
+          }
+          return;
+        }
+
+        try {
+          await deleteUploadedMedia([oldPhotoUrl]);
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  '프로필 사진은 변경됐지만 이전 이미지 정리에 실패했습니다: '
+                  '${friendlyErrorMessage(e)}',
+                ),
               ),
             );
           }
@@ -146,10 +169,32 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (picked == null || !mounted) return;
 
       try {
-        final url = await uploadImageToCloudinary(picked);
-        await ref.set({'photoUrl': url}, SetOptions(merge: true));
+        newlyUploadedUrl = await uploadImageToCloudinary(picked);
+        await ref.set({'photoUrl': newlyUploadedUrl}, SetOptions(merge: true));
+        newPhotoPersisted = true;
         UserProfileCache.invalidate(myUid);
+        if (oldPhotoUrl != newlyUploadedUrl) {
+          try {
+            await deleteUploadedMedia([oldPhotoUrl]);
+          } catch (e) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    '프로필 사진은 변경됐지만 이전 이미지 정리에 실패했습니다: '
+                    '${friendlyErrorMessage(e)}',
+                  ),
+                ),
+              );
+            }
+          }
+        }
       } catch (e) {
+        if (newlyUploadedUrl != null && !newPhotoPersisted) {
+          try {
+            await deleteUploadedMedia([newlyUploadedUrl]);
+          } catch (_) {}
+        }
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
@@ -260,6 +305,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         );
       },
     );
+    await Future<void>.delayed(const Duration(milliseconds: 350));
     nicknameController.dispose();
   }
 
@@ -393,6 +439,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         );
       },
     );
+    await Future<void>.delayed(const Duration(milliseconds: 350));
     controller.dispose();
   }
 
@@ -418,7 +465,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  '탈퇴 시 계정과 내가 작성한 게시글이 모두 삭제되며, 되돌릴 수 없습니다.\n'
+                  '탈퇴 시 계정, 게시글, 내가 보낸 채팅 메시지와 업로드 이미지가 삭제되며, 되돌릴 수 없습니다.\n'
+                  '공유 채팅방에는 상대방을 위해 “탈퇴한 사용자”라는 표시만 남습니다.\n'
                   '탈퇴 후 $kWithdrawalCooldownDays일 동안은 같은 학번으로 다시 가입할 수 없습니다.\n\n'
                   '계속하려면 비밀번호를 입력해주세요.',
                 ),
@@ -455,6 +503,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
 
     final password = passwordController.text;
+    await Future<void>.delayed(const Duration(milliseconds: 350));
     passwordController.dispose();
     if (confirmed != true || _isDeleting) return;
 
@@ -470,67 +519,11 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
       await user.reauthenticateWithCredential(credential);
 
-      final myItems = await itemsCollection
-          .where('authorUid', isEqualTo: user.uid)
-          .get();
-      final myNotifications = await FirebaseFirestore.instance
-          .collection('notifications')
-          .where('recipientUid', isEqualTo: user.uid)
-          .get();
-
-      // chats/messages는 상대방과 공유하는 문서라 여기서 지우지 않는다.
-      // 지우면 상대방 화면에서도 대화 기록 전체가 함께 사라져버린다.
-      final refsToDelete = <DocumentReference>[
-        ...myItems.docs.map((d) => d.reference),
-        ...myNotifications.docs.map((d) => d.reference),
-      ];
-
-      // Firestore 배치는 최대 500개 작업까지만 허용하므로 청크로 나눠 커밋한다.
-      const chunkSize = 450;
-      for (var i = 0; i < refsToDelete.length; i += chunkSize) {
-        final chunk = refsToDelete.sublist(
-          i,
-          (i + chunkSize) > refsToDelete.length
-              ? refsToDelete.length
-              : i + chunkSize,
-        );
-        final batch = FirebaseFirestore.instance.batch();
-        for (final ref in chunk) {
-          batch.delete(ref);
-        }
-        await batch.commit();
-      }
-
-      await FirebaseFirestore.instance
-          .collection('userPrivate')
-          .doc(user.uid)
-          .delete();
-      await FirebaseFirestore.instance
-          .collection('blocks')
-          .doc(user.uid)
-          .delete();
-      await FirebaseFirestore.instance
-          .collection('bookmarks')
-          .doc(user.uid)
-          .delete();
-      await FirebaseFirestore.instance
-          .collection('userPublicProfiles')
-          .doc(user.uid)
-          .delete();
-      await FirebaseFirestore.instance
-          .collection('savedSearches')
-          .doc(user.uid)
-          .delete();
-      await FirebaseFirestore.instance
-          .collection('fcmTokens')
-          .doc(user.uid)
-          .delete();
-
-      // 계정 삭제와 신고 기록 정리, 그리고 "탈퇴 후 재가입 제한" 기록은
-      // 백엔드가 한 번에 처리한다. 클라이언트가 계정만 지우면 제한 기록이
-      // 빠져 곧바로 같은 학번으로 재가입할 수 있게 된다.
-      UserProfileCache.clear();
+      // 사용자 데이터, 재가입 제한 기록, Auth 계정 삭제를 인증된 서버 요청
+      // 하나가 순서대로 처리한다. 클라이언트에서 데이터를 먼저 지우면 요청이
+      // 서버에 도달하지 못했을 때 계정만 남고 데이터는 유실될 수 있다.
       await withdrawAccount();
+      UserProfileCache.clear();
     } on FirebaseAuthException catch (e) {
       if (mounted) {
         setState(() => _isDeleting = false);
@@ -753,6 +746,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       icon: Icons.bug_report_outlined,
                       label: '버그 신고',
                       onTap: _reportBug,
+                    ),
+                    _ProfileMenuTile(
+                      icon: Icons.privacy_tip_outlined,
+                      label: '개인정보 처리방침',
+                      onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => const PrivacyPolicyScreen(),
+                        ),
+                      ),
                     ),
                   ],
                 ),

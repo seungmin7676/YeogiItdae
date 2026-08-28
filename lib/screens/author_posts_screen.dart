@@ -38,6 +38,7 @@ class _AuthorPostsScreenState extends State<AuthorPostsScreen> {
   }
 
   Query<Map<String, dynamic>> get _query => itemsCollection
+      .where('hidden', isEqualTo: false)
       .where('authorUid', isEqualTo: widget.authorUid)
       .orderBy('createdAt', descending: true)
       .limit(_limit);

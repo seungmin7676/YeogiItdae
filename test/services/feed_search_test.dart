@@ -35,6 +35,7 @@ void main() {
       'searchTokens': buildSearchTokens(title, description),
       'reportCount': 0,
       'viewCount': index,
+      'hidden': false,
       'createdAt': Timestamp.fromDate(
         DateTime(2026, 1, 1).add(Duration(minutes: index)),
       ),
@@ -160,6 +161,7 @@ void main() {
       'resolved': false,
       'imageUrls': <String>[],
       'viewCount': 0,
+      'hidden': false,
       'createdAt': Timestamp.fromDate(DateTime(2026, 1, 1)),
     });
 

@@ -1,4 +1,4 @@
-package com.example.latte
+package io.github.seungmin7676.yeogiitdae
 
 import io.flutter.embedding.android.FlutterActivity
 

@@ -75,20 +75,24 @@ class AppUserDataProvider extends StatelessWidget {
       builder: (context, authSnapshot) {
         final uid = authSnapshot.data?.uid;
         return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-          stream: FirebaseFirestore.instance
-              .collection('blocks')
-              .doc(uid ?? '_')
-              .snapshots(),
+          stream: uid == null
+              ? const Stream<DocumentSnapshot<Map<String, dynamic>>>.empty()
+              : FirebaseFirestore.instance
+                    .collection('blocks')
+                    .doc(uid)
+                    .snapshots(),
           builder: (context, blocksSnapshot) {
             final blockedUsersRaw = Map<String, dynamic>.from(
               blocksSnapshot.data?.data()?['blockedUsers'] as Map? ?? {},
             );
             final blockedUids = blockedUsersRaw.keys.toSet();
             return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance
-                  .collection('userSettings')
-                  .doc(uid ?? '_')
-                  .snapshots(),
+              stream: uid == null
+                  ? const Stream<DocumentSnapshot<Map<String, dynamic>>>.empty()
+                  : FirebaseFirestore.instance
+                        .collection('userSettings')
+                        .doc(uid)
+                        .snapshots(),
               builder: (context, settingsSnapshot) {
                 final settings =
                     settingsSnapshot.data?.data() ?? const <String, dynamic>{};
@@ -97,6 +101,7 @@ class AppUserDataProvider extends StatelessWidget {
                   blockedUsersRaw: blockedUsersRaw,
                   settings: settings,
                   isReady:
+                      uid == null ||
                       blocksSnapshot.connectionState != ConnectionState.waiting,
                   child: child,
                 );

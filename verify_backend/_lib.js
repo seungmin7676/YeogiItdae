@@ -1,4 +1,5 @@
-const admin = require('firebase-admin');
+const admin = require('./_admin');
+const crypto = require('crypto');
 
 const ALLOWED_EMAIL_DOMAIN = '@hallym.ac.kr';
 
@@ -33,7 +34,12 @@ async function requireUser(req, res) {
     return null;
   }
   try {
-    return await admin.auth().verifyIdToken(idToken);
+    // 운영에서는 탈취된 토큰이 사용자가 로그아웃·탈퇴한 뒤에도 살아남지 않게
+    // revoked 여부까지 확인한다. Auth 에뮬레이터는 이 원격 확인을 흉내내지
+    // 못하므로 로컬 테스트에서만 생략한다.
+    return await admin
+      .auth()
+      .verifyIdToken(idToken, !process.env.FIREBASE_AUTH_EMULATOR_HOST);
   } catch (e) {
     // 사유는 서버 로그에만 남기고, 클라이언트엔 일반화된 코드만 내려준다.
     console.error('[requireUser] verifyIdToken failed:', e.code, e.message);
@@ -47,11 +53,8 @@ async function requireUser(req, res) {
 // 위한 App Check 검증. 학번 패턴을 순회하며 임의 주소로 메일을 대량
 // 발송시키는 남용을 막는 게 목적이다.
 //
-// 클라이언트 배포·Firebase 콘솔에서의 App Check 활성화(Android는 Play
-// Integrity API 활성화 및 SHA-256 지문 등록, iOS는 App Attest 사용 설정)가
-// 아직 안 됐을 수 있으므로, 기본값은 실패해도 요청을 막지 않고 로그만
-// 남긴다. 콘솔 설정과 클라이언트 배포를 확인한 뒤 APP_CHECK_ENFORCE=true
-// 환경변수를 설정하면 실제로 차단한다.
+// 운영 기본값은 fail-closed다. 명시적으로 APP_CHECK_ENFORCE=false를 준
+// 긴급 롤백과 Firebase 에뮬레이터 테스트에서만 검증 실패를 통과시킨다.
 async function checkAppCheck(req) {
   const token = req.headers['x-firebase-appcheck'];
   if (!token) return { valid: false, reason: 'missing' };
@@ -68,11 +71,73 @@ async function enforceAppCheckIfConfigured(req, res, label) {
   if (result.valid) return true;
 
   console.warn(`[app-check] ${label} 요청에 유효한 App Check 토큰이 없습니다: ${result.reason}`);
-  if (process.env.APP_CHECK_ENFORCE === 'true') {
+  const shouldEnforce =
+    process.env.APP_CHECK_ENFORCE === 'true' ||
+    (process.env.APP_CHECK_ENFORCE !== 'false' && !process.env.FIRESTORE_EMULATOR_HOST);
+  if (shouldEnforce) {
     res.status(401).json({ error: 'app-check-failed' });
     return false;
   }
   return true;
+}
+
+function requestIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.trim()) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.socket?.remoteAddress || req.connection?.remoteAddress || 'unknown';
+}
+
+/**
+ * 서버리스 인스턴스가 여러 개 떠도 공유되는 Firestore 기반 고정 윈도 rate limit.
+ * 문서 ID에는 IP·이메일·uid 원문을 남기지 않고 SHA-256만 저장한다.
+ */
+async function enforceRateLimit(
+  adminInstance,
+  req,
+  res,
+  { scope, identifier = '', max, windowMs },
+) {
+  const now = Date.now();
+  const windowStartMs = Math.floor(now / windowMs) * windowMs;
+  const rawKey = `${scope}|${requestIp(req)}|${String(identifier).toLowerCase()}|${windowStartMs}`;
+  const key = crypto.createHash('sha256').update(rawKey).digest('hex');
+  const ref = adminInstance.firestore().collection('rateLimits').doc(key);
+
+  const allowed = await adminInstance.firestore().runTransaction(async (tx) => {
+    const doc = await tx.get(ref);
+    const count = doc.exists ? Number(doc.data().count || 0) : 0;
+    if (count >= max) return false;
+    tx.set(
+      ref,
+      {
+        scope,
+        count: count + 1,
+        windowStartMs,
+        expiresAt: adminInstance.firestore.Timestamp.fromMillis(
+          windowStartMs + windowMs * 2,
+        ),
+      },
+      { merge: true },
+    );
+    return true;
+  });
+
+  if (!allowed) {
+    res.status(429).json({ error: 'rate-limit' });
+    return false;
+  }
+  return true;
+}
+
+function isVerifiedHallymUser(decoded) {
+  return (
+    decoded &&
+    decoded.email_verified === true &&
+    typeof decoded.email === 'string' &&
+    decoded.email.toLowerCase().endsWith(ALLOWED_EMAIL_DOMAIN)
+  );
 }
 
 module.exports = {
@@ -81,5 +146,7 @@ module.exports = {
   requireUser,
   checkAppCheck,
   enforceAppCheckIfConfigured,
+  enforceRateLimit,
+  isVerifiedHallymUser,
   ALLOWED_EMAIL_DOMAIN,
 };

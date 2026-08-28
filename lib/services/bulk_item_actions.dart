@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 
+import 'backend_exception.dart';
+
 /// 일괄 작업 결과. 성공/이미 삭제됨/실패/중복 실행으로 건너뜀을 구분해,
 /// 화면이 "성공한 것만 선택 해제하고 실패한 것만 남겨 재시도"할 수 있게 한다.
 @immutable
@@ -39,9 +41,10 @@ class BulkActionResult {
 /// - '거래완료' 업데이트는 이미 완료된 글에 다시 적용해도 같은 값을 쓰는
 ///   안전한 no-op이다(서버 규칙 테스트로 확인).
 class BulkItemActions {
-  BulkItemActions(this.collection);
+  BulkItemActions(this.collection, {this.deleteById});
 
   final CollectionReference<Map<String, dynamic>> collection;
+  final Future<void> Function(String itemId)? deleteById;
 
   /// 현재 처리 중인 글 id. (이 인스턴스를 공유하는 화면 안에서의 방어)
   final Set<String> _inFlightIds = {};
@@ -51,7 +54,11 @@ class BulkItemActions {
   }
 
   Future<BulkActionResult> deleteItems(Iterable<String> ids) {
-    return _run('delete', ids, (doc) => doc.delete());
+    return _run(
+      'delete',
+      ids,
+      (doc) => deleteById == null ? doc.delete() : deleteById!(doc.id),
+    );
   }
 
   Future<BulkActionResult> _run(
@@ -82,6 +89,13 @@ class BulkItemActions {
             succeeded.add(id);
           } on FirebaseException catch (e) {
             if (e.code == 'not-found') {
+              notFound.add(id);
+            } else {
+              failed.add(id);
+            }
+            debugPrint('BulkItemActions.$opName 실패 (id=$id, code=${e.code})');
+          } on BackendException catch (e) {
+            if (e.code == 'item-not-found') {
               notFound.add(id);
             } else {
               failed.add(id);

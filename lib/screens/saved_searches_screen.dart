@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/error_messages.dart';
+import '../services/search_tokens.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 
@@ -19,6 +20,9 @@ class SavedSearchesScreen extends StatelessWidget {
   /// 오게 되는 한 글자짜리 키워드도 함께 막는다.
   static const int _maxKeywordLength = 20;
   static const int _maxKeywords = 20;
+
+  List<String> _keywordTokens(Iterable<String> keywords) =>
+      keywords.map(searchTokenFor).whereType<String>().toSet().toList();
 
   Future<void> _addKeyword(
     BuildContext context,
@@ -64,6 +68,10 @@ class SavedSearchesScreen extends StatelessWidget {
         ],
       ),
     );
+    // showDialog의 Future는 닫힘 전환 애니메이션이 끝나기 전에 완료된다.
+    // 그 즉시 controller를 dispose하면 아직 사라지는 중인 TextField가 접근해
+    // 디버그 빌드에서 dependents assertion이 난다.
+    await Future<void>.delayed(const Duration(milliseconds: 350));
     controller.dispose();
     if (keyword == null || keyword.isEmpty || !context.mounted) return;
 
@@ -82,9 +90,11 @@ class SavedSearchesScreen extends StatelessWidget {
     }
 
     try {
+      final nextKeywords = [...existing, keyword];
       await FirebaseFirestore.instance.collection('savedSearches').doc(uid).set(
         {
-          'keywords': FieldValue.arrayUnion([keyword]),
+          'keywords': nextKeywords,
+          'keywordTokens': _keywordTokens(nextKeywords),
         },
         SetOptions(merge: true),
       );
@@ -101,14 +111,17 @@ class SavedSearchesScreen extends StatelessWidget {
     BuildContext context,
     String uid,
     String keyword,
+    List<String> existing,
   ) async {
     try {
-      await FirebaseFirestore.instance
-          .collection('savedSearches')
-          .doc(uid)
-          .update({
-            'keywords': FieldValue.arrayRemove([keyword]),
-          });
+      final nextKeywords = existing.where((value) => value != keyword).toList();
+      await FirebaseFirestore.instance.collection('savedSearches').doc(uid).set(
+        {
+          'keywords': nextKeywords,
+          'keywordTokens': _keywordTokens(nextKeywords),
+        },
+        SetOptions(merge: true),
+      );
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -267,7 +280,12 @@ class SavedSearchesScreen extends StatelessWidget {
                               tooltip: '삭제',
                               onPressed: uid == null
                                   ? null
-                                  : () => _removeKeyword(context, uid, keyword),
+                                  : () => _removeKeyword(
+                                      context,
+                                      uid,
+                                      keyword,
+                                      keywords,
+                                    ),
                             ),
                           ),
                       ],

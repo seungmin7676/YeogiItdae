@@ -3,9 +3,9 @@ import 'dart:convert';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
 import '../services/backend_exception.dart';
+import '../services/backend_http.dart';
 import '../theme/app_theme.dart';
 
 const int _kResendCooldownSeconds = 60;
@@ -62,13 +62,9 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
     String path, {
     Map<String, dynamic>? body,
   }) async {
-    final idToken = await FirebaseAuth.instance.currentUser?.getIdToken();
-    final response = await http.post(
+    final response = await postBackend(
       Uri.parse('$kVerifyBackendUrl$path'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $idToken',
-      },
+      headers: await backendSecurityHeaders(authenticate: true),
       body: jsonEncode(body ?? {}),
     );
     final decoded = response.body.isEmpty
@@ -155,6 +151,12 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
           context,
         ).showSnackBar(SnackBar(content: Text(_sendErrorMessage(e.code))));
       }
+    } on BackendRequestTimeoutException {
+      if (mounted && !silent) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('서버 응답이 늦어 요청을 중단했어요. 다시 시도해주세요.')),
+        );
+      }
     } catch (e) {
       if (mounted && !silent) {
         ScaffoldMessenger.of(
@@ -187,6 +189,10 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
       // 늦게 온 경우 위젯이 이미 사라져 있을 수 있다. mounted를 확인하지
       // 않으면 dispose 이후 setState로 예외가 난다.
       if (mounted) setState(() => _errorText = _verifyErrorMessage(e.code));
+    } on BackendRequestTimeoutException {
+      if (mounted) {
+        setState(() => _errorText = '서버 응답이 늦어 요청을 중단했어요. 다시 시도해주세요.');
+      }
     } catch (e) {
       if (mounted) {
         setState(() => _errorText = '인증에 실패했습니다. 잠시 후 다시 시도해주세요.');
@@ -203,111 +209,115 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
       backgroundColor: AppColors.bg,
       body: SafeArea(
         child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 64,
-                  height: 64,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: AppColors.primaryMuted,
-                    borderRadius: BorderRadius.circular(kRadiusLg),
-                  ),
-                  child: const Icon(
-                    Icons.mark_email_unread_outlined,
-                    color: AppColors.primary,
-                    size: 32,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                const Text(
-                  '이메일 인증 코드를 입력해주세요',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '$email 로 전송된 6자리 코드를 입력해주세요.',
-                  textAlign: TextAlign.center,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    color: AppColors.inkMuted,
-                  ),
-                ),
-                const SizedBox(height: 28),
-                TextField(
-                  controller: _codeController,
-                  keyboardType: TextInputType.number,
-                  textAlign: TextAlign.center,
-                  maxLength: 6,
-                  style: const TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w700,
-                    letterSpacing: 8,
-                  ),
-                  decoration: InputDecoration(
-                    counterText: '',
-                    hintText: '------',
-                    errorText: _errorText,
-                    filled: true,
-                    fillColor: AppColors.surfaceAlt,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(kRadiusMd),
-                      borderSide: BorderSide.none,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: kFormMaxWidth),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 64,
+                    height: 64,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: AppColors.primaryMuted,
+                      borderRadius: BorderRadius.circular(kRadiusLg),
                     ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(kRadiusMd),
-                      borderSide: BorderSide.none,
+                    child: const Icon(
+                      Icons.mark_email_unread_outlined,
+                      color: AppColors.primary,
+                      size: 32,
                     ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(kRadiusMd),
-                      borderSide: const BorderSide(
-                        color: AppColors.primary,
-                        width: 1.6,
+                  ),
+                  const SizedBox(height: 20),
+                  const Text(
+                    '이메일 인증 코드를 입력해주세요',
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    '$email 로 전송된 6자리 코드를 입력해주세요.',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: AppColors.inkMuted,
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  TextField(
+                    controller: _codeController,
+                    keyboardType: TextInputType.number,
+                    textAlign: TextAlign.center,
+                    maxLength: 6,
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 8,
+                    ),
+                    decoration: InputDecoration(
+                      counterText: '',
+                      hintText: '------',
+                      errorText: _errorText,
+                      filled: true,
+                      fillColor: AppColors.surfaceAlt,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(kRadiusMd),
+                        borderSide: BorderSide.none,
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(kRadiusMd),
+                        borderSide: BorderSide.none,
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(kRadiusMd),
+                        borderSide: const BorderSide(
+                          color: AppColors.primary,
+                          width: 1.6,
+                        ),
                       ),
                     ),
                   ),
-                ),
-                const SizedBox(height: 20),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: _isVerifying ? null : _verifyCode,
-                    child: _isVerifying
-                        ? const SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2.5,
-                            ),
-                          )
-                        : const Text('인증 확인'),
+                  const SizedBox(height: 20),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed: _isVerifying ? null : _verifyCode,
+                      child: _isVerifying
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2.5,
+                              ),
+                            )
+                          : const Text('인증 확인'),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 12),
-                TextButton(
-                  onPressed: (_isSending || _cooldownSeconds > 0)
-                      ? null
-                      : () => _sendCode(),
-                  child: Text(
-                    _isSending
-                        ? '전송 중...'
-                        : _cooldownSeconds > 0
-                        ? '$_cooldownSeconds초 후 재전송 가능'
-                        : '코드 재전송',
+                  const SizedBox(height: 12),
+                  TextButton(
+                    onPressed: (_isSending || _cooldownSeconds > 0)
+                        ? null
+                        : () => _sendCode(),
+                    child: Text(
+                      _isSending
+                          ? '전송 중...'
+                          : _cooldownSeconds > 0
+                          ? '$_cooldownSeconds초 후 재전송 가능'
+                          : '코드 재전송',
+                    ),
                   ),
-                ),
-                TextButton(
-                  onPressed: () => FirebaseAuth.instance.signOut(),
-                  child: const Text(
-                    '로그아웃',
-                    style: TextStyle(color: AppColors.inkMuted),
+                  TextButton(
+                    onPressed: () => FirebaseAuth.instance.signOut(),
+                    child: const Text(
+                      '로그아웃',
+                      style: TextStyle(color: AppColors.inkMuted),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
