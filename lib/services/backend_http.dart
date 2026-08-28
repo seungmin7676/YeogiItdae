@@ -6,6 +6,10 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 const Duration kBackendRequestTimeout = Duration(seconds: 30);
+const bool kAppCheckEnabled = bool.fromEnvironment(
+  'APP_CHECK_ENABLED',
+  defaultValue: true,
+);
 Future<void>? _appCheckActivation;
 
 class BackendRequestTimeoutException implements Exception {
@@ -25,6 +29,11 @@ AppleAppCheckProvider appleAppCheckProvider({required bool isDebug}) => isDebug
 /// 빠르게 눌러도 활성화와 토큰 요청이 경주하지 않도록 실제 API 호출도 이 Future를
 /// 기다린다. 실패한 Future는 비워 다음 요청에서 복구를 재시도할 수 있게 한다.
 Future<void> ensureAppCheckActivated() async {
+  // Play Console을 사용하지 않는 교내 전시용 GitHub APK는 빌드 시
+  // APP_CHECK_ENABLED=false를 전달한다. 이 경우 Play Integrity 토큰 요청을
+  // 만들지 않고, 서버의 인증·rate limit만으로 제한된 전시를 운영한다.
+  if (!kAppCheckEnabled) return;
+
   final existing = _appCheckActivation;
   if (existing != null) {
     await existing;
@@ -52,15 +61,17 @@ Future<Map<String, String>> backendSecurityHeaders({
   bool authenticate = false,
 }) async {
   final headers = <String, String>{'Content-Type': 'application/json'};
-  try {
-    await ensureAppCheckActivated();
-    final appCheckToken = await FirebaseAppCheck.instance.getToken();
-    if (appCheckToken != null && appCheckToken.toString().isNotEmpty) {
-      headers['X-Firebase-AppCheck'] = appCheckToken.toString();
+  if (kAppCheckEnabled) {
+    try {
+      await ensureAppCheckActivated();
+      final appCheckToken = await FirebaseAppCheck.instance.getToken();
+      if (appCheckToken != null && appCheckToken.toString().isNotEmpty) {
+        headers['X-Firebase-AppCheck'] = appCheckToken.toString();
+      }
+    } catch (_) {
+      // 서버가 운영 환경에서 fail-closed로 최종 판정한다. 여기서는 플랫폼 미지원
+      // 등의 원래 예외보다 API의 일관된 app-check-failed 응답을 받게 둔다.
     }
-  } catch (_) {
-    // 서버가 운영 환경에서 fail-closed로 최종 판정한다. 여기서는 플랫폼 미지원
-    // 등의 원래 예외보다 API의 일관된 app-check-failed 응답을 받게 둔다.
   }
   if (authenticate) {
     final idToken = await FirebaseAuth.instance.currentUser?.getIdToken();

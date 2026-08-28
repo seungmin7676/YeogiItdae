@@ -22,13 +22,17 @@
 ## 2. Firebase 보안과 데이터 — 필수
 
 - [x] Firebase App Check API를 활성화했다.
-- [x] Android Play Integrity를 GitHub 외부 APK용 정책으로 등록했다. iOS를
-  배포할 때 App Attest/DeviceCheck를 등록한다. 개발
-  기기에서만 debug token을 쓰고 운영 비밀값 `APP_CHECK_ENFORCE`는 생략하거나
-  `true`로 둔다. `false`는 운영에서 사용하지 않는다.
-- [ ] Google Play Console에 Android 앱을 초안으로 추가하고 Play Integrity API의
-  **Link Cloud project**에서 `yeogi-itdae`를 연결한다. 스토어 공개는 필요 없지만
-  Play Integrity 토큰 발급에는 이 연결이 필요하다.
+- [x] Android Play Integrity 제공자와 release 인증서 SHA-256을 등록했다. 현재
+  Play Console 없이 진행하는 제한된 교내 전시에서는 사용하지 않고, 이후 스토어
+  배포 때 Cloud project 연결까지 마친 뒤 활성화한다. iOS를 배포할 때는
+  App Attest/DeviceCheck를 별도로 등록한다.
+- [x] 현재 교내 전시용 GitHub APK는 Play Console 가입 없이
+  `APP_CHECK_ENABLED=false`로 빌드하고 Vercel의 `APP_CHECK_ENFORCE=false`와
+  짝을 맞춘다. Play Integrity는 사용하지 않지만 사용자 인증과 서버 rate limit은
+  유지한다.
+- [ ] Play Store 또는 불특정 다수 대상 배포 전에는 Google Play Console에
+  Android 앱을 추가하고 Play Integrity API의 **Link Cloud project**에서
+  `yeogi-itdae`를 연결한 뒤 App Check 클라이언트·서버 강제를 모두 다시 켠다.
 - [x] `firestore.indexes.json`을 배포하고 Firebase에서 모든 인덱스가
   **Enabled** 상태가 될 때까지 기다린다. 배포 전 실제 피드 조회는 필요한 인덱스가
   없어 `FAILED_PRECONDITION`으로 실패한다.
