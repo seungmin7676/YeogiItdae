@@ -1,6 +1,10 @@
 const { initAdmin, setCors, requireUser } = require('../_lib');
 const { buildSearchTokens } = require('../_search');
 
+// 운영 데이터 백필이 완료된 일회성 도구다. Vercel Hobby의 Serverless Function
+// 12개 제한에 포함되지 않도록 api 밖에 보관하며, 필요하면 로컬 테스트 후
+// 임시 관리자 작업으로만 실행한다.
+
 // firestore.rules / lib/services/admin.dart 의 관리자 이메일과 반드시 일치시킨다.
 const ADMIN_EMAIL = '20225216@hallym.ac.kr';
 
@@ -18,16 +22,9 @@ const BATCH_CHUNK = 450;
  * 안전하다(멱등).
  *
  * Firestore에는 "필드가 없는 문서만" 조회하는 방법이 없으므로 문서 ID 순으로
- * 전체를 훑는다. 한 번에 다 돌면 서버리스 실행 시간을 넘길 수 있어, 응답의
- * nextCursor를 다음 호출에 넘겨 이어서 처리한다:
- *
- *   curl -X POST https://<배포주소>/api/backfill-search-tokens \
- *        -H "Authorization: Bearer <관리자 ID 토큰>" \
- *        -H "Content-Type: application/json" -d '{}'
- *   # 응답 예: { done:false, nextCursor:"abc123", updated: 300 }
- *   curl ... -d '{"startAfter":"abc123"}'
- *
- * done이 true가 될 때까지 반복한다.
+ * 전체를 훑는다. 한 번에 다 돌면 실행 시간을 넘길 수 있어, 응답의 nextCursor를
+ * 다음 호출에 넘겨 이어서 처리한다. 현재는 운영 백필이 끝나 production API에서
+ * 제외됐으며, 다시 필요할 때만 임시 관리자 작업으로 실행한다.
  */
 module.exports = async (req, res) => {
   setCors(res);
