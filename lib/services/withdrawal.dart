@@ -1,6 +1,5 @@
 import 'dart:convert';
 
-import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 
@@ -36,19 +35,11 @@ class WithdrawnCooldownException implements Exception {
 /// 진짜 관문은 서버에 따로 있기 때문에 여기서 막으면 오프라인일 때 멀쩡한
 /// 사용자만 가입하지 못한다.
 Future<void> ensureSignupAllowed(String email) async {
-  String? appCheckToken;
-  try {
-    appCheckToken = (await FirebaseAppCheck.instance.getToken())?.toString();
-  } catch (_) {}
-
   http.Response response;
   try {
     response = await postBackend(
       Uri.parse('$kVerifyBackendUrl/api/signup-eligibility'),
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Firebase-AppCheck': ?appCheckToken,
-      },
+      headers: await backendSecurityHeaders(),
       body: jsonEncode({'email': email}),
     );
   } catch (_) {

@@ -40,6 +40,15 @@ Android 릴리스 빌드는 실제 업로드 키가 없으면 의도적으로 �
 flutter build appbundle --release
 ```
 
+Play Console을 사용하지 않는 교내 전시용 GitHub APK는 아래처럼 빌드합니다.
+이 빌드는 Play Integrity 토큰을 요청하지 않으므로 Vercel production 환경의
+`APP_CHECK_ENFORCE`도 `false`여야 합니다. 사용자 인증과 서버 rate limit은 계속
+적용되지만, 공개 스토어 배포 전에는 App Check를 다시 켜야 합니다.
+
+```powershell
+flutter build apk --release --dart-define=APP_CHECK_ENABLED=false
+```
+
 운영 배포 순서와 콘솔에서 확인해야 할 항목은
 [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md)를 따릅니다. Android 전시 빌드는
 고유 식별자 `io.github.seungmin7676.yeogiitdae`와 별도 Firebase 앱을 사용합니다.
