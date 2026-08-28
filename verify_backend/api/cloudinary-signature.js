@@ -1,5 +1,12 @@
 const crypto = require('crypto');
-const { initAdmin, setCors, requireUser } = require('../_lib');
+const {
+  initAdmin,
+  setCors,
+  requireUser,
+  enforceAppCheckIfConfigured,
+  enforceRateLimit,
+  isVerifiedHallymUser,
+} = require('../_lib');
 
 // 지금까지는 클라이언트가 unsigned upload preset으로 Cloudinary에 직접
 // 업로드했다. unsigned preset은 cloud name/preset 이름만 알면(APK/웹
@@ -15,9 +22,19 @@ module.exports = async (req, res) => {
 
   // requireUser가 admin.auth()를 쓰므로 반드시 먼저 기본 앱을 초기화한다
   // (다른 엔드포인트와 동일한 순서). 이게 빠져 있어 서명 발급이 401로 실패했다.
-  initAdmin();
+  const admin = initAdmin();
+  if (!(await enforceAppCheckIfConfigured(req, res, 'cloudinary-signature'))) return;
   const decoded = await requireUser(req, res);
   if (!decoded) return;
+  if (!isVerifiedHallymUser(decoded)) {
+    return res.status(403).json({ error: 'verified-hallym-user-required' });
+  }
+  if (!(await enforceRateLimit(admin, req, res, {
+    scope: 'cloudinary-signature-user',
+    identifier: decoded.uid,
+    max: 30,
+    windowMs: 60 * 1000,
+  }))) return;
 
   const apiSecret = process.env.CLOUDINARY_API_SECRET;
   const apiKey = process.env.CLOUDINARY_API_KEY;
@@ -28,10 +45,14 @@ module.exports = async (req, res) => {
   }
 
   const timestamp = Math.floor(Date.now() / 1000);
+  const folder = `latte/${decoded.uid}`;
+  const publicId = crypto.randomUUID();
   // Cloudinary 서명 규칙: 서명에 포함할 파라미터(file/cloud_name/api_key
   // 제외)를 키 이름 알파벳 순으로 정렬해 이어붙이고, 끝에 API secret을
   // 붙여 SHA-1 해시한다.
-  const paramsToSign = `timestamp=${timestamp}&upload_preset=${uploadPreset}`;
+  const paramsToSign =
+    `folder=${folder}&public_id=${publicId}&timestamp=${timestamp}` +
+    `&upload_preset=${uploadPreset}`;
   const signature = crypto
     .createHash('sha1')
     .update(paramsToSign + apiSecret)
@@ -43,5 +64,7 @@ module.exports = async (req, res) => {
     apiKey,
     cloudName,
     uploadPreset,
+    folder,
+    publicId,
   });
 };

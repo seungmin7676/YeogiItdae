@@ -1,10 +1,10 @@
 import 'dart:convert';
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 
 import 'backend_exception.dart';
+import 'backend_http.dart';
 
 /// 로그인한 사용자만 업로드할 수 있도록, cloud name/preset을 클라이언트에
 /// 고정해두지 않고 매번 백엔드(verify_backend)에서 서명을 발급받아 함께
@@ -15,17 +15,9 @@ import 'backend_exception.dart';
 ///
 /// 선택한 이미지를 Cloudinary에 업로드하고 접근 가능한 URL을 반환한다.
 Future<String> uploadImageToCloudinary(XFile file) async {
-  final idToken = await FirebaseAuth.instance.currentUser?.getIdToken();
-  if (idToken == null) {
-    throw Exception('로그인이 필요합니다.');
-  }
-
-  final signResponse = await http.post(
+  final signResponse = await postBackend(
     Uri.parse('$kVerifyBackendUrl/api/cloudinary-signature'),
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer $idToken',
-    },
+    headers: await backendSecurityHeaders(authenticate: true),
   );
   final signDecoded = signResponse.body.isEmpty
       ? <String, dynamic>{}
@@ -45,6 +37,8 @@ Future<String> uploadImageToCloudinary(XFile file) async {
     ..fields['timestamp'] = signDecoded['timestamp'].toString()
     ..fields['signature'] = signDecoded['signature'] as String
     ..fields['upload_preset'] = signDecoded['uploadPreset'] as String
+    ..fields['folder'] = signDecoded['folder'] as String
+    ..fields['public_id'] = signDecoded['publicId'] as String
     ..files.add(
       http.MultipartFile.fromBytes('file', bytes, filename: file.name),
     );

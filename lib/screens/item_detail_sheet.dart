@@ -8,6 +8,7 @@ import 'package:share_plus/share_plus.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/error_messages.dart';
+import '../services/item_deletion.dart';
 import '../services/image_save_service.dart';
 import '../services/push_sender.dart';
 import '../theme/app_theme.dart';
@@ -894,28 +895,7 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
     _closingSelf = true;
     final navigator = Navigator.of(context);
     try {
-      // 게시글을 지우기 전에, 이 글로 진행 중이던 채팅방들에 먼저
-      // "게시글 삭제됨" 표시를 남긴다. 그렇지 않으면 채팅방에 남아있는
-      // 거래완료 확인/처리 버튼이 이미 사라진 게시글 문서를 업데이트하려다
-      // 실패해 사용자에게 원인을 알 수 없는 오류만 보여주게 된다.
-      // list 규칙 증명을 위해 participants 필터가 필요하다(_markResolved와
-      // 동일한 이유). 작성자는 이 글의 모든 채팅방 참여자라 결과는 동일하다.
-      final relatedChats = await FirebaseFirestore.instance
-          .collection('chats')
-          .where('participants', arrayContains: item.authorUid)
-          .where('itemId', isEqualTo: item.id)
-          .get();
-      if (relatedChats.docs.isNotEmpty) {
-        final batch = FirebaseFirestore.instance.batch();
-        for (final chatDoc in relatedChats.docs) {
-          batch.set(chatDoc.reference, {
-            'itemDeleted': true,
-          }, SetOptions(merge: true));
-        }
-        await batch.commit();
-      }
-
-      await itemsCollection.doc(item.id).delete();
+      await deleteItemOnServer(item.id!);
       navigator.pop();
     } catch (e) {
       _closingSelf = false;
@@ -1138,6 +1118,7 @@ class _ReportAppealSectionState extends State<_ReportAppealSection> {
         ],
       ),
     );
+    await Future<void>.delayed(const Duration(milliseconds: 350));
     reasonController.dispose();
     if (reason == null || reason.isEmpty || !context.mounted) return;
 

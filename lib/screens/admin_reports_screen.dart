@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/error_messages.dart';
+import '../services/item_deletion.dart';
 import '../services/push_sender.dart';
 import '../theme/app_theme.dart';
 import '../widgets/confirm_dialog.dart';
@@ -150,8 +151,8 @@ class _AdminReportsScreenState extends State<AdminReportsScreen> {
     );
     if (!confirmed) return;
     await _run(group, () async {
+      await deleteItemOnServer(group.itemId);
       final batch = FirebaseFirestore.instance.batch();
-      batch.delete(itemsCollection.doc(group.itemId));
       _notifyAuthor(batch, group, type: 'item_removed');
       _notifyReporters(batch, group);
       _clearReports(batch, group);

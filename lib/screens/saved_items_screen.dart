@@ -72,6 +72,7 @@ class _SavedItemsScreenState extends State<SavedItemsScreen> {
         (i + 10) > itemIds.length ? itemIds.length : i + 10,
       );
       final snap = await itemsCollection
+          .where('hidden', isEqualTo: false)
           .where(FieldPath.documentId, whereIn: chunk)
           .get();
       items.addAll(LostFoundItem.fromDocs(snap.docs));

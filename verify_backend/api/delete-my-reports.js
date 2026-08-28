@@ -1,4 +1,9 @@
-const { initAdmin, setCors, requireUser } = require('../_lib');
+const {
+  initAdmin,
+  setCors,
+  requireUser,
+  enforceAppCheckIfConfigured,
+} = require('../_lib');
 const { deleteReportsBy } = require('../_withdrawal');
 
 // reports 컬렉션은 클라이언트가 읽기/쓰기 전부 차단되어 있어(신고 사유 비공개,
@@ -13,6 +18,7 @@ module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method-not-allowed' });
 
   const admin = initAdmin();
+  if (!(await enforceAppCheckIfConfigured(req, res, 'delete-my-reports'))) return;
   const decoded = await requireUser(req, res);
   if (!decoded) return;
 

@@ -1,11 +1,18 @@
 const nodemailer = require('nodemailer');
-const { initAdmin, setCors, ALLOWED_EMAIL_DOMAIN, enforceAppCheckIfConfigured } = require('../_lib');
+const crypto = require('crypto');
+const {
+  initAdmin,
+  setCors,
+  ALLOWED_EMAIL_DOMAIN,
+  enforceAppCheckIfConfigured,
+  enforceRateLimit,
+} = require('../_lib');
 
 const RESEND_COOLDOWN_MS = 60 * 1000;
 const CODE_TTL_MS = 10 * 60 * 1000;
 
 function generateCode() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+  return crypto.randomInt(100000, 1000000).toString();
 }
 
 module.exports = async (req, res) => {
@@ -25,11 +32,31 @@ module.exports = async (req, res) => {
     return res.status(403).json({ error: 'domain-not-allowed' });
   }
 
+
+  if (
+    !(await enforceRateLimit(admin, req, res, {
+      scope: 'send-reset-ip',
+      max: 15,
+      windowMs: 15 * 60 * 1000,
+    })) ||
+    !(await enforceRateLimit(admin, req, res, {
+      scope: 'send-reset-email',
+      identifier: email,
+      max: 5,
+      windowMs: 60 * 60 * 1000,
+    }))
+  ) return;
+
   let userRecord;
   try {
     userRecord = await admin.auth().getUserByEmail(email);
   } catch (e) {
-    return res.status(404).json({ error: 'user-not-found' });
+    // 계정 존재 여부를 API 응답으로 노출하지 않는다. 가입되지 않은 주소에도
+    // 동일한 성공 응답을 주되 메일·코드 문서는 만들지 않는다.
+    if (e.code === 'auth/user-not-found') {
+      return res.status(200).json({ ok: true });
+    }
+    throw e;
   }
 
   const db = admin.firestore();
@@ -39,16 +66,18 @@ module.exports = async (req, res) => {
     const data = existing.data();
     const lastSentAt = data.lastSentAt?.toMillis?.() ?? 0;
     if (Date.now() - lastSentAt < RESEND_COOLDOWN_MS) {
-      return res.status(429).json({ error: 'cooldown' });
+      return res.status(200).json({ ok: true });
     }
   }
 
   const code = generateCode();
+  const expiresAt = admin.firestore.Timestamp.fromMillis(Date.now() + CODE_TTL_MS);
   await docRef.set({
     code,
     email,
     attempts: 0,
-    expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + CODE_TTL_MS),
+    expiresAt,
+    cleanupAt: expiresAt,
     lastSentAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 

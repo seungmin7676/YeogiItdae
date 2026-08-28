@@ -5,7 +5,7 @@
     "display": "standalone",
     "background_color": "#F5F7FB",
     "theme_color": "#2F6FED",
-    "description": "A new Flutter project.",
+    "description": "한림대학교 구성원을 위한 분실물 찾기 서비스 여기있대!",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

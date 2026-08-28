@@ -10,6 +10,7 @@ import '../theme/app_theme.dart';
 import '../widgets/department_field.dart';
 import '../widgets/hallym_logo.dart';
 import 'password_reset_screen.dart';
+import 'privacy_policy_screen.dart';
 
 enum _AuthMode { login, signup }
 
@@ -218,279 +219,303 @@ class _LoginScreenState extends State<LoginScreen> {
     return Scaffold(
       backgroundColor: AppColors.surface,
       body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Column(
-                    children: [
-                      const HallymLogo(size: 56),
-                      const SizedBox(height: 14),
-                      const Text(
-                        '여기있대!',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 26,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: -0.6,
-                          color: AppColors.ink,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: kFormMaxWidth),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Column(
+                      children: [
+                        const HallymLogo(size: 56),
+                        const SizedBox(height: 14),
+                        const Text(
+                          '여기있대!',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 26,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -0.6,
+                            color: AppColors.ink,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        const Text(
+                          '캠퍼스에서 잃어버린 물건을 찾아보세요',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 14,
+                            color: AppColors.ink,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: -0.2,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '$kAllowedEmailDomain 계정으로 시작하세요',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            fontSize: 12.5,
+                            color: AppColors.inkMuted,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 32),
+                    TextFormField(
+                      controller: _emailController,
+                      validator: _validateEmail,
+                      // 이메일 앞부분(학번)만 입력받는 칸이라 숫자 키패드가
+                      // 자연스럽고, 다음 칸(비밀번호)으로 바로 넘어갈 수 있게 한다.
+                      keyboardType: TextInputType.emailAddress,
+                      textInputAction: TextInputAction.next,
+                      autofillHints: const [AutofillHints.username],
+                      decoration: _inputDecoration(
+                        '학교 이메일',
+                        hint: '학번',
+                        suffixText: kAllowedEmailDomain,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    TextFormField(
+                      controller: _passwordController,
+                      obscureText: _obscurePassword,
+                      validator: _validatePassword,
+                      textInputAction: isLogin
+                          ? TextInputAction.done
+                          : TextInputAction.next,
+                      autofillHints: [
+                        isLogin
+                            ? AutofillHints.password
+                            : AutofillHints.newPassword,
+                      ],
+                      // 로그인 화면에서는 마지막 칸이므로 키보드의 완료로 바로
+                      // 로그인까지 이어지게 한다.
+                      onFieldSubmitted: (_) {
+                        if (isLogin && !_isSubmitting) _submit();
+                      },
+                      decoration: _inputDecoration(
+                        '비밀번호',
+                        hint: '8자 이상',
+                        // 오타 때문에 로그인이 막히는 일이 잦은 자리라, 직접
+                        // 확인할 수 있는 표시/숨김 전환을 둔다.
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            _obscurePassword
+                                ? Icons.visibility_off_outlined
+                                : Icons.visibility_outlined,
+                            color: AppColors.inkMuted,
+                            size: 20,
+                          ),
+                          tooltip: _obscurePassword ? '비밀번호 표시' : '비밀번호 숨기기',
+                          onPressed: () => setState(
+                            () => _obscurePassword = !_obscurePassword,
+                          ),
                         ),
                       ),
-                      const SizedBox(height: 6),
-                      const Text(
-                        '캠퍼스에서 잃어버린 물건을 찾아보세요',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: AppColors.ink,
-                          fontWeight: FontWeight.w600,
-                          letterSpacing: -0.2,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
+                    ),
+                    if (!isLogin) ...[
+                      const SizedBox(height: 24),
                       Text(
-                        '$kAllowedEmailDomain 계정으로 시작하세요',
+                        '실명·학과·학번은 도난 등 문제 발생 시에만 사용되며\n다른 사용자에게 공개되지 않습니다.\n',
                         textAlign: TextAlign.center,
                         style: const TextStyle(
-                          fontSize: 12.5,
+                          fontSize: 12,
                           color: AppColors.inkMuted,
-                          fontWeight: FontWeight.w500,
                         ),
                       ),
-                    ],
-                  ),
-                  const SizedBox(height: 32),
-                  TextFormField(
-                    controller: _emailController,
-                    validator: _validateEmail,
-                    // 이메일 앞부분(학번)만 입력받는 칸이라 숫자 키패드가
-                    // 자연스럽고, 다음 칸(비밀번호)으로 바로 넘어갈 수 있게 한다.
-                    keyboardType: TextInputType.emailAddress,
-                    textInputAction: TextInputAction.next,
-                    autofillHints: const [AutofillHints.username],
-                    decoration: _inputDecoration(
-                      '학교 이메일',
-                      hint: '학번',
-                      suffixText: kAllowedEmailDomain,
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  TextFormField(
-                    controller: _passwordController,
-                    obscureText: _obscurePassword,
-                    validator: _validatePassword,
-                    textInputAction: isLogin
-                        ? TextInputAction.done
-                        : TextInputAction.next,
-                    autofillHints: [
-                      isLogin
-                          ? AutofillHints.password
-                          : AutofillHints.newPassword,
-                    ],
-                    // 로그인 화면에서는 마지막 칸이므로 키보드의 완료로 바로
-                    // 로그인까지 이어지게 한다.
-                    onFieldSubmitted: (_) {
-                      if (isLogin && !_isSubmitting) _submit();
-                    },
-                    decoration: _inputDecoration(
-                      '비밀번호',
-                      hint: '8자 이상',
-                      // 오타 때문에 로그인이 막히는 일이 잦은 자리라, 직접
-                      // 확인할 수 있는 표시/숨김 전환을 둔다.
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _obscurePassword
-                              ? Icons.visibility_off_outlined
-                              : Icons.visibility_outlined,
-                          color: AppColors.inkMuted,
-                          size: 20,
-                        ),
-                        tooltip: _obscurePassword ? '비밀번호 표시' : '비밀번호 숨기기',
-                        onPressed: () => setState(
-                          () => _obscurePassword = !_obscurePassword,
+                      const SizedBox(height: 14),
+                      TextFormField(
+                        controller: _nicknameController,
+                        validator: _validateNickname,
+                        maxLength: 12,
+                        decoration: _inputDecoration(
+                          '닉네임',
+                          hint: '다른 사용자에게 공개되는 이름',
                         ),
                       ),
-                    ),
-                  ),
-                  if (!isLogin) ...[
-                    const SizedBox(height: 24),
-                    Text(
-                      '실명·학과·학번은 도난 등 문제 발생 시에만 사용되며\n다른 사용자에게 공개되지 않습니다.\n',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: AppColors.inkMuted,
+                      const SizedBox(height: 14),
+                      TextFormField(
+                        controller: _realNameController,
+                        validator: _validateRealName,
+                        decoration: _inputDecoration('이름', hint: '실명'),
                       ),
-                    ),
-                    const SizedBox(height: 14),
-                    TextFormField(
-                      controller: _nicknameController,
-                      validator: _validateNickname,
-                      maxLength: 12,
-                      decoration: _inputDecoration(
-                        '닉네임',
-                        hint: '다른 사용자에게 공개되는 이름',
+                      const SizedBox(height: 14),
+                      DepartmentField(
+                        controller: _departmentController,
+                        validator: _validateDepartment,
+                        fillColor: AppColors.surfaceAlt,
                       ),
-                    ),
-                    const SizedBox(height: 14),
-                    TextFormField(
-                      controller: _realNameController,
-                      validator: _validateRealName,
-                      decoration: _inputDecoration('이름', hint: '실명'),
-                    ),
-                    const SizedBox(height: 14),
-                    DepartmentField(
-                      controller: _departmentController,
-                      validator: _validateDepartment,
-                      fillColor: AppColors.surfaceAlt,
-                    ),
-                    const SizedBox(height: 14),
-                    TextFormField(
-                      controller: _studentIdController,
-                      keyboardType: TextInputType.number,
-                      validator: _validateStudentId,
-                      decoration: _inputDecoration('학번 또는 사번', hint: '숫자만 입력'),
-                    ),
-                    const SizedBox(height: 16),
-                    // 탭 처리를 바깥 InkWell 하나가 맡고 Checkbox는 표시용이라,
-                    // 스크린 리더에는 이 영역 전체를 하나의 체크박스로 알린다.
-                    Semantics(
-                      checked: _agreedToPrivacy,
-                      label: '개인정보 수집 및 이용 동의(필수)',
-                      child: InkWell(
-                        onTap: () {
-                          setState(() => _agreedToPrivacy = !_agreedToPrivacy);
-                        },
-                        borderRadius: BorderRadius.circular(kRadiusMd),
-                        child: Container(
-                          padding: const EdgeInsets.fromLTRB(12, 10, 14, 14),
-                          decoration: BoxDecoration(
-                            color: _agreedToPrivacy
-                                ? AppColors.primaryMuted
-                                : AppColors.surfaceAlt,
-                            borderRadius: BorderRadius.circular(kRadiusMd),
-                            border: Border.all(
+                      const SizedBox(height: 14),
+                      TextFormField(
+                        controller: _studentIdController,
+                        keyboardType: TextInputType.number,
+                        validator: _validateStudentId,
+                        decoration: _inputDecoration(
+                          '학번 또는 사번',
+                          hint: '숫자만 입력',
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      // 탭 처리를 바깥 InkWell 하나가 맡고 Checkbox는 표시용이라,
+                      // 스크린 리더에는 이 영역 전체를 하나의 체크박스로 알린다.
+                      Semantics(
+                        checked: _agreedToPrivacy,
+                        label: '개인정보 수집 및 이용 동의(필수)',
+                        child: InkWell(
+                          onTap: () {
+                            setState(
+                              () => _agreedToPrivacy = !_agreedToPrivacy,
+                            );
+                          },
+                          borderRadius: BorderRadius.circular(kRadiusMd),
+                          child: Container(
+                            padding: const EdgeInsets.fromLTRB(12, 10, 14, 14),
+                            decoration: BoxDecoration(
                               color: _agreedToPrivacy
-                                  ? AppColors.primary.withValues(alpha: 0.4)
-                                  : AppColors.line,
-                            ),
-                          ),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              ExcludeSemantics(
-                                child: IgnorePointer(
-                                  // 이 체크박스는 순전히 시각적 표시용이다. 탭 처리는
-                                  // 바깥 InkWell 하나만 담당한다 — 체크박스가 자체
-                                  // onChanged로도 탭을 받으면 정확히 체크박스 위를
-                                  // 눌렀을 때 두 콜백이 경합해 두 번 토글되어(상쇄되어)
-                                  // 아무 반응도 없는 것처럼 보이는 문제가 있었다.
-                                  child: Checkbox(
-                                    value: _agreedToPrivacy,
-                                    activeColor: AppColors.primary,
-                                    visualDensity: VisualDensity.compact,
-                                    materialTapTargetSize:
-                                        MaterialTapTargetSize.shrinkWrap,
-                                    onChanged: (_) {},
-                                  ),
-                                ),
+                                  ? AppColors.primaryMuted
+                                  : AppColors.surfaceAlt,
+                              borderRadius: BorderRadius.circular(kRadiusMd),
+                              border: Border.all(
+                                color: _agreedToPrivacy
+                                    ? AppColors.primary.withValues(alpha: 0.4)
+                                    : AppColors.line,
                               ),
-                              const SizedBox(width: 8),
-                              const Expanded(
-                                child: Padding(
-                                  padding: EdgeInsets.only(top: 4),
-                                  child: Text(
-                                    '(필수) 이름·학과·학번 등 개인정보 수집 및 이용에 동의합니다.\n'
-                                    '수집된 정보는 분실물 관련 분쟁(도난 등) 발생 시에만 사용되며, 다른 사용자에게 공개되지 않습니다.',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      height: 1.5,
-                                      color: AppColors.inkMuted,
+                            ),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                ExcludeSemantics(
+                                  child: IgnorePointer(
+                                    // 이 체크박스는 순전히 시각적 표시용이다. 탭 처리는
+                                    // 바깥 InkWell 하나만 담당한다 — 체크박스가 자체
+                                    // onChanged로도 탭을 받으면 정확히 체크박스 위를
+                                    // 눌렀을 때 두 콜백이 경합해 두 번 토글되어(상쇄되어)
+                                    // 아무 반응도 없는 것처럼 보이는 문제가 있었다.
+                                    child: Checkbox(
+                                      value: _agreedToPrivacy,
+                                      activeColor: AppColors.primary,
+                                      visualDensity: VisualDensity.compact,
+                                      materialTapTargetSize:
+                                          MaterialTapTargetSize.shrinkWrap,
+                                      onChanged: (_) {},
                                     ),
                                   ),
                                 ),
-                              ),
-                            ],
+                                const SizedBox(width: 8),
+                                const Expanded(
+                                  child: Padding(
+                                    padding: EdgeInsets.only(top: 4),
+                                    child: Text(
+                                      '(필수) 이름·학과·학번 등 개인정보 수집 및 이용에 동의합니다.\n'
+                                      '수집된 정보는 분실물 관련 분쟁(도난 등) 발생 시에만 사용되며, 다른 사용자에게 공개되지 않습니다.',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        height: 1.5,
+                                        color: AppColors.inkMuted,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  ],
-                  const SizedBox(height: 24),
-                  ElevatedButton(
-                    onPressed: _isSubmitting ? null : _submit,
-                    child: _isSubmitting
-                        ? const SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                              color: Colors.white,
-                              strokeWidth: 2.5,
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton(
+                          onPressed: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const PrivacyPolicyScreen(),
                             ),
-                          )
-                        : Text(isLogin ? '로그인' : '회원가입'),
-                  ),
-                  const SizedBox(height: 8),
-                  TextButton(
-                    onPressed: _isSubmitting
-                        ? null
-                        : () {
-                            setState(() {
-                              _mode = isLogin
-                                  ? _AuthMode.signup
-                                  : _AuthMode.login;
-                            });
-                          },
-                    child: Text(
-                      isLogin ? '계정이 없으신가요? 회원가입' : '이미 계정이 있으신가요? 로그인',
-                      style: const TextStyle(
-                        color: AppColors.primary,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                  ),
-                  if (isLogin) ...[
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 6, horizontal: 8),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: Divider(color: AppColors.line, height: 1),
                           ),
-                          Padding(
-                            padding: EdgeInsets.symmetric(horizontal: 12),
-                            child: Text(
-                              '또는',
-                              style: TextStyle(
-                                fontSize: 12.5,
-                                color: AppColors.inkFaint,
-                                fontWeight: FontWeight.w500,
+                          child: const Text('개인정보 처리방침 전문 보기'),
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 24),
+                    ElevatedButton(
+                      onPressed: _isSubmitting ? null : _submit,
+                      child: _isSubmitting
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                color: Colors.white,
+                                strokeWidth: 2.5,
                               ),
-                            ),
-                          ),
-                          Expanded(
-                            child: Divider(color: AppColors.line, height: 1),
-                          ),
-                        ],
-                      ),
+                            )
+                          : Text(isLogin ? '로그인' : '회원가입'),
                     ),
+                    const SizedBox(height: 8),
                     TextButton(
-                      onPressed: _isSubmitting ? null : _goToPasswordReset,
-                      child: const Text(
-                        '비밀번호를 잊으셨나요?',
-                        style: TextStyle(
-                          color: AppColors.inkMuted,
-                          fontWeight: FontWeight.w500,
+                      onPressed: _isSubmitting
+                          ? null
+                          : () {
+                              setState(() {
+                                _mode = isLogin
+                                    ? _AuthMode.signup
+                                    : _AuthMode.login;
+                              });
+                            },
+                      child: Text(
+                        isLogin ? '계정이 없으신가요? 회원가입' : '이미 계정이 있으신가요? 로그인',
+                        style: const TextStyle(
+                          color: AppColors.primary,
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
+                    if (isLogin) ...[
+                      const Padding(
+                        padding: EdgeInsets.symmetric(
+                          vertical: 6,
+                          horizontal: 8,
+                        ),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Divider(color: AppColors.line, height: 1),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 12),
+                              child: Text(
+                                '또는',
+                                style: TextStyle(
+                                  fontSize: 12.5,
+                                  color: AppColors.inkFaint,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                            Expanded(
+                              child: Divider(color: AppColors.line, height: 1),
+                            ),
+                          ],
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: _isSubmitting ? null : _goToPasswordReset,
+                        child: const Text(
+                          '비밀번호를 잊으셨나요?',
+                          style: TextStyle(
+                            color: AppColors.inkMuted,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
             ),
           ),

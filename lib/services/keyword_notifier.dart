@@ -1,9 +1,8 @@
 import 'dart:convert';
 
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:http/http.dart' as http;
-
 import 'backend_exception.dart';
+import 'backend_http.dart';
 
 /// 새 글이 등록됐으니 키워드·카테고리 구독자에게 알림을 보내달라고 백엔드에
 /// 요청한다.
@@ -23,13 +22,9 @@ Future<void> notifyKeywordMatches({required String itemId}) async {
   try {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
-    final idToken = await user.getIdToken();
-    await http.post(
+    await postBackend(
       Uri.parse('$kVerifyBackendUrl/api/notify-matches'),
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Bearer $idToken',
-      },
+      headers: await backendSecurityHeaders(authenticate: true),
       body: jsonEncode({'itemId': itemId}),
     );
   } catch (_) {

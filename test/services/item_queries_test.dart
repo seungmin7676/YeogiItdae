@@ -38,6 +38,7 @@ void main() {
         'imageUrls': <String>[],
         'reportCount': 0,
         'viewCount': index,
+        'hidden': false,
         'createdAt': Timestamp.fromDate(
           DateTime(2026, 1, 1).add(Duration(minutes: index)),
         ),
@@ -51,6 +52,28 @@ void main() {
   });
 
   group('buildFeedQuery', () {
+    test('관리자가 숨긴 글은 피드에서 제외된다', () async {
+      await seed(category: '가방', count: 2);
+      await items.add({
+        'title': '숨김 글',
+        'hidden': true,
+        'createdAt': Timestamp.fromDate(DateTime(2026, 1, 2)),
+        'viewCount': 999,
+      });
+
+      final snap = await buildFeedQuery(
+        collection: items,
+        typeFilter: 0,
+        category: kAllFilterLabel,
+        location: kAllFilterLabel,
+        sortByPopular: false,
+        limit: kInitialPageLimit,
+      ).get();
+
+      expect(snap.docs, hasLength(2));
+      expect(snap.docs.any((doc) => doc.data()['hidden'] == true), isFalse);
+    });
+
     test('카테고리 필터를 켜도 첫 페이지가 20개로 꽉 찬다', () async {
       // 최신 글 40개는 전부 '가방'이라, 클라이언트 필터 방식이었다면
       // 상위 20개에 '전자기기'가 하나도 안 잡혀 0건이 나왔을 상황이다.

@@ -1,4 +1,10 @@
-const { initAdmin, setCors, requireUser } = require('../_lib');
+const {
+  initAdmin,
+  setCors,
+  requireUser,
+  enforceAppCheckIfConfigured,
+  enforceRateLimit,
+} = require('../_lib');
 
 module.exports = async (req, res) => {
   setCors(res);
@@ -6,8 +12,15 @@ module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method-not-allowed' });
 
   const admin = initAdmin();
+  if (!(await enforceAppCheckIfConfigured(req, res, 'verify-code'))) return;
   const decoded = await requireUser(req, res);
   if (!decoded) return;
+  if (!(await enforceRateLimit(admin, req, res, {
+    scope: 'verify-code-user',
+    identifier: decoded.uid,
+    max: 12,
+    windowMs: 10 * 60 * 1000,
+  }))) return;
 
   const inputCode = (req.body?.code ?? '').toString().trim();
   if (!inputCode) return res.status(400).json({ error: 'missing-code' });

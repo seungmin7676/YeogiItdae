@@ -1,10 +1,15 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'backend_http.dart';
+
 /// 예외를 사용자에게 보여줄 한국어 메시지로 변환한다. `Exception.toString()`을
 /// 그대로 스낵바에 띄우면 `[cloud_firestore/permission-denied] ...` 같은
 /// 내부 오류 코드가 노출되므로, 알려진 Firebase 예외 코드는 의미 있는
 /// 문구로 바꾸고 나머지는 일반적인 안내 문구로 대체한다.
 String friendlyErrorMessage(Object error) {
+  if (error is BackendRequestTimeoutException) {
+    return '서버 응답이 늦어요. 네트워크를 확인하고 다시 시도해주세요.';
+  }
   if (error is FirebaseException) {
     switch (error.code) {
       case 'permission-denied':

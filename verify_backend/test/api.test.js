@@ -6,7 +6,12 @@
 const { test, before, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const { mockReq, mockRes, signUpTestUser } = require('./helpers');
+const {
+  mockReq,
+  mockRes,
+  signUpTestUser,
+  signUpVerifiedTestUser,
+} = require('./helpers');
 
 const AUTH_EMULATOR_HOST = '127.0.0.1:9099';
 const FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085';
@@ -33,7 +38,7 @@ before((t) => {
     },
   });
 
-  admin = require('firebase-admin');
+  admin = require('../_admin');
 });
 
 beforeEach(async () => {
@@ -223,6 +228,7 @@ test('비밀번호 재설정: 코드 발송 → 확인 → 재설정 전체 흐�
   const db = admin.firestore();
   const userRecord = await admin.auth().getUserByEmail('henry@hallym.ac.kr');
   const codeDoc = await db.collection('passwordResetCodes').doc(userRecord.uid).get();
+  assert.ok(codeDoc.data().cleanupAt, '인증 코드에 TTL 정리 시각이 있어야 한다');
   const code = codeDoc.data().code;
 
   const verifyResetCode = require('../api/verify-reset-code');
@@ -234,6 +240,8 @@ test('비밀번호 재설정: 코드 발송 → 확인 → 재설정 전체 흐�
   assert.equal(verifyRes.statusCode, 200);
   const resetToken = verifyRes._json.resetToken;
   assert.ok(resetToken);
+  const tokenDoc = await db.collection('passwordResetCodes').doc(userRecord.uid).get();
+  assert.ok(tokenDoc.data().cleanupAt, '재설정 토큰에도 TTL 정리 시각이 있어야 한다');
 
   const resetPassword = require('../api/reset-password');
   const resetRes = mockRes();
@@ -260,22 +268,23 @@ test('비밀번호 재설정: 코드 발송 → 확인 → 재설정 전체 흐�
   assert.equal(reuseRes.statusCode, 404);
 });
 
-test('send-reset-code: 가입되지 않은 이메일은 404', async () => {
+test('send-reset-code: 가입되지 않은 이메일도 계정 열거를 막기 위해 같은 성공 응답', async () => {
   const sendResetCode = require('../api/send-reset-code');
   const res = mockRes();
   await sendResetCode(mockReq({ body: { email: 'nobody@hallym.ac.kr' } }), res);
-  assert.equal(res.statusCode, 404);
-  assert.equal(res._json.error, 'user-not-found');
+  assert.equal(res.statusCode, 200);
+  assert.equal(res._json.ok, true);
+  assert.equal(sentEmails.length, 0);
 });
 
-test('send-reset-code: App Check 토큰이 없어도 APP_CHECK_ENFORCE가 꺼져 있으면 막지 않는다(기본값)', async () => {
+test('send-reset-code: 에뮬레이터에서는 App Check 토큰 없이도 로컬 테스트할 수 있다', async () => {
   delete process.env.APP_CHECK_ENFORCE;
   const sendResetCode = require('../api/send-reset-code');
   const res = mockRes();
-  // App Check 토큰 없이 호출 — user-not-found까지 도달한다면
+  // App Check 토큰 없이 호출 — 성공 응답까지 도달한다면
   // App Check 단계에서 막히지 않았다는 뜻이다.
   await sendResetCode(mockReq({ body: { email: 'nobody@hallym.ac.kr' } }), res);
-  assert.equal(res.statusCode, 404);
+  assert.equal(res.statusCode, 200);
 });
 
 test('send-reset-code: APP_CHECK_ENFORCE=true인데 토큰이 없으면 401로 막는다', async () => {
@@ -357,7 +366,11 @@ test('cloudinary-signature: 로그인하지 않으면 401', async () => {
 test('cloudinary-signature: 환경변수가 없으면 500', async () => {
   delete process.env.CLOUDINARY_API_SECRET;
   const cloudinarySignature = require('../api/cloudinary-signature');
-  const { idToken } = await signUpTestUser('judy@hallym.ac.kr', 'password123');
+  const { idToken } = await signUpVerifiedTestUser(
+    admin,
+    'judy@hallym.ac.kr',
+    'password123',
+  );
   const res = mockRes();
   await cloudinarySignature(
     mockReq({ headers: { authorization: `Bearer ${idToken}` } }),
@@ -373,7 +386,11 @@ test('cloudinary-signature: 로그인한 사용자에게 검증 가능한 서명
   process.env.CLOUDINARY_UPLOAD_PRESET = 'test-preset';
 
   const cloudinarySignature = require('../api/cloudinary-signature');
-  const { idToken } = await signUpTestUser('kate@hallym.ac.kr', 'password123');
+  const { idToken } = await signUpVerifiedTestUser(
+    admin,
+    'kate@hallym.ac.kr',
+    'password123',
+  );
   const res = mockRes();
   await cloudinarySignature(
     mockReq({ headers: { authorization: `Bearer ${idToken}` } }),
@@ -381,7 +398,15 @@ test('cloudinary-signature: 로그인한 사용자에게 검증 가능한 서명
   );
 
   assert.equal(res.statusCode, 200);
-  const { signature, timestamp, apiKey, cloudName, uploadPreset } = res._json;
+  const {
+    signature,
+    timestamp,
+    apiKey,
+    cloudName,
+    uploadPreset,
+    folder,
+    publicId,
+  } = res._json;
   assert.equal(apiKey, 'test-key');
   assert.equal(cloudName, 'test-cloud');
   assert.equal(uploadPreset, 'test-preset');
@@ -390,7 +415,82 @@ test('cloudinary-signature: 로그인한 사용자에게 검증 가능한 서명
   // 직접 재계산해 발급된 서명이 맞는지 확인한다.
   const expectedSignature = crypto
     .createHash('sha1')
-    .update(`timestamp=${timestamp}&upload_preset=test-preset` + 'test-secret')
+    .update(
+      `folder=${folder}&public_id=${publicId}&timestamp=${timestamp}` +
+        '&upload_preset=test-preset' +
+        'test-secret',
+    )
     .digest('hex');
   assert.equal(signature, expectedSignature);
+  assert.match(folder, /^latte\//);
+  assert.match(publicId, /^[0-9a-f-]{36}$/);
+});
+
+test('delete-item: 작성자만 게시글을 지우고 연결 채팅을 삭제 상태로 바꾼다', async () => {
+  const owner = await signUpVerifiedTestUser(
+    admin,
+    'item-owner@hallym.ac.kr',
+    'password123',
+  );
+  const attacker = await signUpVerifiedTestUser(
+    admin,
+    'item-attacker@hallym.ac.kr',
+    'password123',
+  );
+  const db = admin.firestore();
+  await db.collection('items').doc('delete-me').set({
+    authorUid: owner.localId,
+    imageUrls: [],
+  });
+  await db.collection('chats').doc('related-chat').set({
+    itemId: 'delete-me',
+    itemDeleted: false,
+  });
+  await db.collection('reports').doc('related-report').set({
+    itemId: 'delete-me',
+  });
+  await db.collection('notifications').doc('related-notification').set({
+    itemId: 'delete-me',
+  });
+  await db.collection('reportAppeals').doc('delete-me').set({
+    itemId: 'delete-me',
+  });
+  const deleteItem = require('../api/delete-item');
+
+  const denied = mockRes();
+  await deleteItem(
+    mockReq({
+      body: { itemId: 'delete-me' },
+      headers: { authorization: `Bearer ${attacker.idToken}` },
+    }),
+    denied,
+  );
+  assert.equal(denied.statusCode, 403);
+
+  const allowed = mockRes();
+  await deleteItem(
+    mockReq({
+      body: { itemId: 'delete-me' },
+      headers: { authorization: `Bearer ${owner.idToken}` },
+    }),
+    allowed,
+  );
+  assert.equal(allowed.statusCode, 200);
+  assert.equal((await db.collection('items').doc('delete-me').get()).exists, false);
+  assert.equal(
+    (await db.collection('chats').doc('related-chat').get()).data().itemDeleted,
+    true,
+  );
+  assert.equal(
+    (await db.collection('reports').doc('related-report').get()).exists,
+    false,
+  );
+  assert.equal(
+    (await db.collection('notifications').doc('related-notification').get()).exists,
+    false,
+  );
+  assert.equal(
+    (await db.collection('reportAppeals').doc('delete-me').get()).exists,
+    false,
+  );
 });

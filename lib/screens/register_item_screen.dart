@@ -11,6 +11,7 @@ import '../services/analytics_service.dart';
 import '../services/cloudinary_service.dart';
 import '../services/error_messages.dart';
 import '../services/keyword_notifier.dart';
+import '../services/media_deletion.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/confirm_dialog.dart';
@@ -203,8 +204,10 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
     final description = _descriptionController.text.trim();
     final locationDetail = _locationDetailController.text.trim();
 
+    final uploadedUrls = <String>[];
+    var itemPersisted = false;
+    String? cleanupWarning;
     try {
-      final uploadedUrls = <String>[];
       for (final file in _newImages) {
         uploadedUrls.add(await uploadImageToCloudinary(file));
       }
@@ -228,6 +231,17 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
         await itemsCollection
             .doc(updatedItem.id)
             .update(updatedItem.toUpdateMap());
+        itemPersisted = true;
+        final removedUrls = editing.imageUrls.where(
+          (url) => !imageUrls.contains(url),
+        );
+        try {
+          await deleteUploadedMedia(removedUrls);
+        } catch (e) {
+          cleanupWarning =
+              '수정은 완료됐지만 제거한 이미지 정리를 마치지 못했습니다: '
+              '${friendlyErrorMessage(e)}';
+        }
       } else {
         final user = FirebaseAuth.instance.currentUser!;
         final newItem = LostFoundItem(
@@ -242,6 +256,7 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
           imageUrls: imageUrls,
         );
         final ref = await itemsCollection.add(newItem.toMap());
+        itemPersisted = true;
         logItemRegistered(
           category: _selectedCategory,
           type: _selectedType.name,
@@ -252,8 +267,20 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
         // 결과를 기다리지 않는다.
         unawaited(notifyKeywordMatches(itemId: ref.id));
       }
-      if (mounted) Navigator.pop(context);
+      if (mounted) {
+        Navigator.pop(context);
+        if (cleanupWarning != null) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(cleanupWarning)));
+        }
+      }
     } catch (e) {
+      if (!itemPersisted) {
+        try {
+          await deleteUploadedMedia(uploadedUrls);
+        } catch (_) {}
+      }
       if (mounted) {
         setState(() => _isSubmitting = false);
         ScaffoldMessenger.of(context).showSnackBar(
@@ -325,188 +352,202 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
         appBar: AppBar(title: Text(_isEditing ? '글 수정' : '글쓰기')),
         body: SingleChildScrollView(
           padding: const EdgeInsets.all(kPagePadding),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SectionLabel('사진 $_totalImageCount/$_maxImages'),
-              const SizedBox(height: 10),
-              SizedBox(
-                height: 92,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  children: [
-                    if (_totalImageCount < _maxImages)
-                      GestureDetector(
-                        onTap: _pickImages,
-                        child: Semantics(
-                          button: true,
-                          label: '사진 추가',
-                          child: Container(
-                            width: 88,
-                            height: 88,
-                            margin: const EdgeInsets.only(right: 10),
-                            decoration: BoxDecoration(
-                              color: AppColors.surfaceAlt,
-                              borderRadius: BorderRadius.circular(kRadiusMd),
-                            ),
-                            child: const Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                Icon(
-                                  Icons.photo_camera_outlined,
-                                  color: AppColors.inkMuted,
-                                ),
-                                SizedBox(height: 4),
-                                Text(
-                                  '사진 추가',
-                                  style: TextStyle(
-                                    color: AppColors.inkMuted,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: kFormMaxWidth),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SectionLabel('사진 $_totalImageCount/$_maxImages'),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 92,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      children: [
+                        if (_totalImageCount < _maxImages)
+                          GestureDetector(
+                            onTap: _pickImages,
+                            child: Semantics(
+                              button: true,
+                              label: '사진 추가',
+                              child: Container(
+                                width: 88,
+                                height: 88,
+                                margin: const EdgeInsets.only(right: 10),
+                                decoration: BoxDecoration(
+                                  color: AppColors.surfaceAlt,
+                                  borderRadius: BorderRadius.circular(
+                                    kRadiusMd,
                                   ),
                                 ),
-                              ],
+                                child: const Column(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    Icon(
+                                      Icons.photo_camera_outlined,
+                                      color: AppColors.inkMuted,
+                                    ),
+                                    SizedBox(height: 4),
+                                    Text(
+                                      '사진 추가',
+                                      style: TextStyle(
+                                        color: AppColors.inkMuted,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
                             ),
                           ),
-                        ),
-                      ),
-                    // 88dp 썸네일 자리에 1600px 원본을 그대로 디코딩하지 않도록
-                    // 표시 크기에 맞춰 디코딩 폭을 제한한다.
-                    for (var i = 0; i < _existingImageUrls.length; i++)
-                      _ImagePickerTile(
-                        key: ValueKey('existing_$i'),
-                        onRemove: () => _removeExistingImage(i),
-                        child: CachedNetworkImage(
-                          imageUrl: _existingImageUrls[i],
-                          width: 88,
-                          height: 88,
-                          fit: BoxFit.cover,
-                          memCacheWidth: thumbDecodeSize,
-                          memCacheHeight: thumbDecodeSize,
-                          errorWidget: (context, url, error) => const Icon(
-                            Icons.broken_image_outlined,
-                            color: AppColors.inkFaint,
+                        // 88dp 썸네일 자리에 1600px 원본을 그대로 디코딩하지 않도록
+                        // 표시 크기에 맞춰 디코딩 폭을 제한한다.
+                        for (var i = 0; i < _existingImageUrls.length; i++)
+                          _ImagePickerTile(
+                            key: ValueKey('existing_$i'),
+                            onRemove: () => _removeExistingImage(i),
+                            child: CachedNetworkImage(
+                              imageUrl: _existingImageUrls[i],
+                              width: 88,
+                              height: 88,
+                              fit: BoxFit.cover,
+                              memCacheWidth: thumbDecodeSize,
+                              memCacheHeight: thumbDecodeSize,
+                              errorWidget: (context, url, error) => const Icon(
+                                Icons.broken_image_outlined,
+                                color: AppColors.inkFaint,
+                              ),
+                            ),
                           ),
-                        ),
-                      ),
-                    for (var i = 0; i < _newImageBytes.length; i++)
-                      _ImagePickerTile(
-                        key: ValueKey('new_$i'),
-                        onRemove: () => _removeNewImage(i),
-                        child: Image.memory(
-                          _newImageBytes[i],
-                          width: 88,
-                          height: 88,
-                          fit: BoxFit.cover,
-                          cacheWidth: thumbDecodeSize,
-                        ),
-                      ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 24),
-              const SectionLabel('글 종류'),
-              const SizedBox(height: 10),
-              AppSegmented(
-                labels: const ['습득 · 주웠어요', '분실 · 잃어버렸어요'],
-                selectedIndex: _selectedType == ItemType.found ? 0 : 1,
-                onChanged: (index) => setState(() {
-                  _selectedType = index == 0 ? ItemType.found : ItemType.lost;
-                }),
-              ),
-              const SizedBox(height: 24),
-              const SectionLabel('물건 이름'),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _titleController,
-                maxLength: _maxTitleLength,
-                textInputAction: TextInputAction.next,
-                decoration: _fieldDecoration('예: 검은색 백팩, 아이폰 15'),
-              ),
-              const SizedBox(height: 24),
-              const SectionLabel('카테고리'),
-              const SizedBox(height: 10),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceAlt,
-                  borderRadius: BorderRadius.circular(kRadiusMd),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: _selectedCategory,
-                    isExpanded: true,
-                    borderRadius: BorderRadius.circular(kRadiusMd),
-                    icon: const Icon(Icons.keyboard_arrow_down_rounded),
-                    items: kItemCategories
-                        .map((c) => DropdownMenuItem(value: c, child: Text(c)))
-                        .toList(),
-                    onChanged: (value) {
-                      if (value != null) {
-                        setState(() => _selectedCategory = value);
-                      }
-                    },
-                  ),
-                ),
-              ),
-              const SizedBox(height: 24),
-              const SectionLabel('물건 세부 설명'),
-              const SizedBox(height: 10),
-              TextField(
-                controller: _descriptionController,
-                maxLines: 4,
-                maxLength: _maxDescriptionLength,
-                maxLengthEnforcement: MaxLengthEnforcement.enforced,
-                decoration: _fieldDecoration(
-                  '색상, 브랜드, 특징 등 자세히 적어주시면 찾는 데 도움이 돼요.',
-                ),
-              ),
-              const SizedBox(height: 24),
-              SectionLabel(_selectedType == ItemType.found ? '발견 장소' : '분실 장소'),
-              const SizedBox(height: 10),
-              InkWell(
-                borderRadius: BorderRadius.circular(kRadiusMd),
-                onTap: _pickLocation,
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 15,
-                  ),
-                  decoration: BoxDecoration(
-                    color: AppColors.surfaceAlt,
-                    borderRadius: BorderRadius.circular(kRadiusMd),
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          _selectedLocation,
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: AppColors.ink,
-                            fontWeight: FontWeight.w500,
+                        for (var i = 0; i < _newImageBytes.length; i++)
+                          _ImagePickerTile(
+                            key: ValueKey('new_$i'),
+                            onRemove: () => _removeNewImage(i),
+                            child: Image.memory(
+                              _newImageBytes[i],
+                              width: 88,
+                              height: 88,
+                              fit: BoxFit.cover,
+                              cacheWidth: thumbDecodeSize,
+                            ),
                           ),
-                        ),
-                      ),
-                      const Icon(
-                        Icons.keyboard_arrow_down_rounded,
-                        color: AppColors.inkMuted,
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
+                  const SizedBox(height: 24),
+                  const SectionLabel('글 종류'),
+                  const SizedBox(height: 10),
+                  AppSegmented(
+                    labels: const ['습득 · 주웠어요', '분실 · 잃어버렸어요'],
+                    selectedIndex: _selectedType == ItemType.found ? 0 : 1,
+                    onChanged: (index) => setState(() {
+                      _selectedType = index == 0
+                          ? ItemType.found
+                          : ItemType.lost;
+                    }),
+                  ),
+                  const SizedBox(height: 24),
+                  const SectionLabel('물건 이름'),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _titleController,
+                    maxLength: _maxTitleLength,
+                    textInputAction: TextInputAction.next,
+                    decoration: _fieldDecoration('예: 검은색 백팩, 아이폰 15'),
+                  ),
+                  const SizedBox(height: 24),
+                  const SectionLabel('카테고리'),
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceAlt,
+                      borderRadius: BorderRadius.circular(kRadiusMd),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        value: _selectedCategory,
+                        isExpanded: true,
+                        borderRadius: BorderRadius.circular(kRadiusMd),
+                        icon: const Icon(Icons.keyboard_arrow_down_rounded),
+                        items: kItemCategories
+                            .map(
+                              (c) => DropdownMenuItem(value: c, child: Text(c)),
+                            )
+                            .toList(),
+                        onChanged: (value) {
+                          if (value != null) {
+                            setState(() => _selectedCategory = value);
+                          }
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  const SectionLabel('물건 세부 설명'),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _descriptionController,
+                    maxLines: 4,
+                    maxLength: _maxDescriptionLength,
+                    maxLengthEnforcement: MaxLengthEnforcement.enforced,
+                    decoration: _fieldDecoration(
+                      '색상, 브랜드, 특징 등 자세히 적어주시면 찾는 데 도움이 돼요.',
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  SectionLabel(
+                    _selectedType == ItemType.found ? '발견 장소' : '분실 장소',
+                  ),
+                  const SizedBox(height: 10),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(kRadiusMd),
+                    onTap: _pickLocation,
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 15,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceAlt,
+                        borderRadius: BorderRadius.circular(kRadiusMd),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              _selectedLocation,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                color: AppColors.ink,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                          const Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            color: AppColors.inkMuted,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _locationDetailController,
+                    maxLength: _maxLocationDetailLength,
+                    textInputAction: TextInputAction.done,
+                    decoration: _fieldDecoration('세부 위치 (예: 1층 북카페 창가 자리)'),
+                  ),
+                  const SizedBox(height: 24),
+                ],
               ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _locationDetailController,
-                maxLength: _maxLocationDetailLength,
-                textInputAction: TextInputAction.done,
-                decoration: _fieldDecoration('세부 위치 (예: 1층 북카페 창가 자리)'),
-              ),
-              const SizedBox(height: 24),
-            ],
+            ),
           ),
         ),
         // 저장 버튼은 하단에 고정 — 긴 폼을 끝까지 내리지 않아도 저장할 수
@@ -517,31 +558,46 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
             border: Border(top: BorderSide(color: AppColors.line)),
           ),
           child: SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(
-                kPagePadding,
-                10,
-                kPagePadding,
-                12,
-              ),
-              child: ElevatedButton(
-                onPressed: _isSubmitting || _titleController.text.trim().isEmpty
-                    ? null
-                    : _submit,
-                child: _isSubmitting
-                    ? const SizedBox(
-                        width: 22,
-                        height: 22,
-                        child: CircularProgressIndicator(
-                          color: Colors.white,
-                          strokeWidth: 2.5,
-                        ),
-                      )
-                    : Text(
-                        _titleController.text.trim().isEmpty
-                            ? '물건 이름을 입력해주세요'
-                            : (_isEditing ? '수정 완료' : '등록하기'),
+            child: Align(
+              heightFactor: 1,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: kFormMaxWidth),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    kPagePadding,
+                    10,
+                    kPagePadding,
+                    12,
+                  ),
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      minimumSize: Size.fromHeight(
+                        scaledControlHeight(context, 52),
                       ),
+                    ),
+                    onPressed:
+                        _isSubmitting || _titleController.text.trim().isEmpty
+                        ? null
+                        : _submit,
+                    child: _isSubmitting
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2.5,
+                              semanticsLabel: '게시글 저장 중',
+                            ),
+                          )
+                        : Text(
+                            _titleController.text.trim().isEmpty
+                                ? '물건 이름을 입력해주세요'
+                                : (_isEditing ? '수정 완료' : '등록하기'),
+                            maxLines: 2,
+                            textAlign: TextAlign.center,
+                          ),
+                  ),
+                ),
               ),
             ),
           ),

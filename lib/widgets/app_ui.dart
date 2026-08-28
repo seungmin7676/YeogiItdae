@@ -349,12 +349,12 @@ class GroupSurface extends StatelessWidget {
         items.add(const Divider(indent: 16, endIndent: 16));
       }
     }
-    return Container(
+    return Material(
       clipBehavior: Clip.antiAlias,
-      decoration: BoxDecoration(
-        color: AppColors.surface,
+      color: AppColors.surface,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(kRadiusLg),
-        border: Border.all(color: AppColors.line),
+        side: const BorderSide(color: AppColors.line),
       ),
       child: Column(children: items),
     );

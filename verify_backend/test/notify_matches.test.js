@@ -8,7 +8,6 @@ const assert = require('node:assert/strict');
 const {
   mockReq,
   mockRes,
-  signUpTestUser,
   signUpVerifiedTestUser,
 } = require('./helpers');
 
@@ -27,7 +26,7 @@ let admin;
 let buildSearchTokens;
 
 before(() => {
-  admin = require('firebase-admin');
+  admin = require('../_admin');
   ({ buildSearchTokens } = require('../_search'));
 });
 
@@ -63,7 +62,14 @@ async function addItem(id, { authorUid, title, description = '', category = '기
 }
 
 async function setSavedSearch(uid, { keywords = [], categories = [] }) {
-  await admin.firestore().collection('savedSearches').doc(uid).set({ keywords, categories });
+  const keywordTokens = [
+    ...new Set(keywords.map((keyword) => buildSearchTokens(keyword, '')[0]).filter(Boolean)),
+  ];
+  await admin.firestore().collection('savedSearches').doc(uid).set({
+    keywords,
+    keywordTokens,
+    categories,
+  });
 }
 
 async function notificationsFor(uid) {
@@ -88,7 +94,7 @@ test('notify-matches: 인증 토큰이 없으면 401', async () => {
 
 test('notify-matches: 없는 글이면 404', async () => {
   const notify = require('../api/notify-matches');
-  const { idToken } = await signUpTestUser('poster@hallym.ac.kr', 'password123');
+  const { idToken } = await signUpVerifiedTestUser(admin, 'poster@hallym.ac.kr', 'password123');
   const res = mockRes();
   await notify(
     mockReq({ body: { itemId: 'nope' }, headers: { authorization: `Bearer ${idToken}` } }),
@@ -99,7 +105,7 @@ test('notify-matches: 없는 글이면 404', async () => {
 
 test('notify-matches: 남의 글을 빌미로 알림을 뿌릴 수 없다', async () => {
   const notify = require('../api/notify-matches');
-  const { idToken } = await signUpTestUser('attacker@hallym.ac.kr', 'password123');
+  const { idToken } = await signUpVerifiedTestUser(admin, 'attacker@hallym.ac.kr', 'password123');
   await addItem('item1', { authorUid: 'someone-else', title: '검은색 지갑' });
   await setSavedSearch('victim', { keywords: ['지갑'] });
 
@@ -116,7 +122,7 @@ test('notify-matches: 남의 글을 빌미로 알림을 뿌릴 수 없다', asyn
 
 test('notify-matches: 키워드가 일치하는 구독자에게 알림이 생성된다', async () => {
   const notify = require('../api/notify-matches');
-  const { idToken, localId } = await signUpTestUser('poster2@hallym.ac.kr', 'password123');
+  const { idToken, localId } = await signUpVerifiedTestUser(admin, 'poster2@hallym.ac.kr', 'password123');
   await addItem('item1', { authorUid: localId, title: '검은색 지갑 주웠어요' });
   await setSavedSearch('subscriber', { keywords: ['지갑'] });
   await setSavedSearch('unrelated', { keywords: ['우산'] });
@@ -139,9 +145,33 @@ test('notify-matches: 키워드가 일치하는 구독자에게 알림이 생성
   assert.equal((await notificationsFor('unrelated')).length, 0);
 });
 
+test('notify-matches: 같은 글 요청을 재시도해도 알림은 한 번만 생성된다', async () => {
+  const notify = require('../api/notify-matches');
+  const { idToken, localId } = await signUpVerifiedTestUser(
+    admin,
+    'poster-idempotent@hallym.ac.kr',
+    'password123',
+  );
+  await addItem('same-item', { authorUid: localId, title: '검은색 지갑' });
+  await setSavedSearch('subscriber', { keywords: ['지갑'] });
+  const request = mockReq({
+    body: { itemId: 'same-item' },
+    headers: { authorization: `Bearer ${idToken}` },
+  });
+
+  const first = mockRes();
+  const second = mockRes();
+  await notify(request, first);
+  await notify(request, second);
+
+  assert.equal(first._json.matched, 1);
+  assert.equal(second._json.skipped, 'duplicate');
+  assert.equal((await notificationsFor('subscriber')).length, 1);
+});
+
 test('notify-matches: 부분 포함과 띄어쓰기 차이도 매칭된다', async () => {
   const notify = require('../api/notify-matches');
-  const { idToken, localId } = await signUpTestUser('poster3@hallym.ac.kr', 'password123');
+  const { idToken, localId } = await signUpVerifiedTestUser(admin, 'poster3@hallym.ac.kr', 'password123');
   await addItem('item1', { authorUid: localId, title: '책가방과 아이폰 15' });
   await setSavedSearch('sub1', { keywords: ['가방'] }); // 부분 포함
   await setSavedSearch('sub2', { keywords: ['아이폰15'] }); // 띄어쓰기 다름
@@ -157,7 +187,7 @@ test('notify-matches: 부분 포함과 띄어쓰기 차이도 매칭된다', asy
 
 test('notify-matches: 카테고리 구독자에게도 알림이 간다', async () => {
   const notify = require('../api/notify-matches');
-  const { idToken, localId } = await signUpTestUser('poster4@hallym.ac.kr', 'password123');
+  const { idToken, localId } = await signUpVerifiedTestUser(admin, 'poster4@hallym.ac.kr', 'password123');
   await addItem('item1', { authorUid: localId, title: '노트북', category: '전자기기' });
   await setSavedSearch('sub', { categories: ['전자기기'] });
 
@@ -174,7 +204,7 @@ test('notify-matches: 카테고리 구독자에게도 알림이 간다', async (
 
 test('notify-matches: 키워드와 카테고리가 둘 다 맞아도 알림은 한 번만(키워드 우선)', async () => {
   const notify = require('../api/notify-matches');
-  const { idToken, localId } = await signUpTestUser('poster5@hallym.ac.kr', 'password123');
+  const { idToken, localId } = await signUpVerifiedTestUser(admin, 'poster5@hallym.ac.kr', 'password123');
   await addItem('item1', { authorUid: localId, title: '노트북', category: '전자기기' });
   await setSavedSearch('sub', { keywords: ['노트북'], categories: ['전자기기'] });
 
@@ -190,7 +220,7 @@ test('notify-matches: 키워드와 카테고리가 둘 다 맞아도 알림은 �
 
 test('notify-matches: 글쓴이 본인에게는 보내지 않는다', async () => {
   const notify = require('../api/notify-matches');
-  const { idToken, localId } = await signUpTestUser('poster6@hallym.ac.kr', 'password123');
+  const { idToken, localId } = await signUpVerifiedTestUser(admin, 'poster6@hallym.ac.kr', 'password123');
   await addItem('item1', { authorUid: localId, title: '검은색 지갑' });
   await setSavedSearch(localId, { keywords: ['지갑'] });
 
@@ -206,7 +236,7 @@ test('notify-matches: 글쓴이 본인에게는 보내지 않는다', async () =
 
 test('notify-matches: 숨김 처리된 글로는 알림을 보내지 않는다', async () => {
   const notify = require('../api/notify-matches');
-  const { idToken, localId } = await signUpTestUser('poster7@hallym.ac.kr', 'password123');
+  const { idToken, localId } = await signUpVerifiedTestUser(admin, 'poster7@hallym.ac.kr', 'password123');
   await addItem('item1', { authorUid: localId, title: '검은색 지갑', hidden: true });
   await setSavedSearch('sub', { keywords: ['지갑'] });
 
@@ -254,6 +284,7 @@ test('backfill: 토큰이 없는 예전 글에만 채워 넣는다', async () =>
     description: '',
     authorUid: 'someone',
     searchTokens: ['이미'],
+    hidden: false,
   });
 
   const res = mockRes();
@@ -265,6 +296,7 @@ test('backfill: 토큰이 없는 예전 글에만 채워 넣는다', async () =>
 
   const old = await db.collection('items').doc('old').get();
   assert.deepEqual(old.data().searchTokens, buildSearchTokens('검은색 지갑', ''));
+  assert.equal(old.data().hidden, false, '예전 글도 목록 쿼리에 노출되도록 백필');
   const fresh = await db.collection('items').doc('new').get();
   assert.deepEqual(fresh.data().searchTokens, ['이미'], '이미 채워진 글은 그대로');
 });
@@ -306,4 +338,21 @@ test('backfill: 두 번 돌려도 안전하다(멱등)', async () => {
 
   assert.equal(first._json.updated, 1);
   assert.equal(second._json.updated, 0, '두 번째 실행은 아무것도 바꾸지 않는다');
+});
+
+test('saved-search backfill: 기존 구독에 후보 조회 토큰을 채우며 멱등이다', async () => {
+  const backfill = require('../api/backfill-saved-search-tokens');
+  const { idToken } = await signUpVerifiedTestUser(admin, ADMIN_EMAIL, 'password123');
+  const ref = admin.firestore().collection('savedSearches').doc('legacy-user');
+  await ref.set({ keywords: ['검은색 백팩', '지갑'], categories: [] });
+  const request = mockReq({ headers: { authorization: `Bearer ${idToken}` } });
+
+  const first = mockRes();
+  const second = mockRes();
+  await backfill(request, first);
+  await backfill(request, second);
+
+  assert.equal(first._json.updated, 1);
+  assert.equal(second._json.updated, 0);
+  assert.deepEqual((await ref.get()).data().keywordTokens, ['검은', '지갑']);
 });

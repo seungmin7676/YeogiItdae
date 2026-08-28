@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:http/http.dart' as http;
 
 import 'backend_exception.dart';
+import 'backend_http.dart';
 
 /// 탈퇴 후 재가입이 제한되는 기간(일).
 ///
@@ -42,7 +43,7 @@ Future<void> ensureSignupAllowed(String email) async {
 
   http.Response response;
   try {
-    response = await http.post(
+    response = await postBackend(
       Uri.parse('$kVerifyBackendUrl/api/signup-eligibility'),
       headers: {
         'Content-Type': 'application/json',
@@ -65,25 +66,21 @@ Future<void> ensureSignupAllowed(String email) async {
   }
 }
 
-/// 회원 탈퇴를 마무리한다 — 재가입 제한 기록, 신고 기록 정리, 계정 삭제.
+/// 회원 탈퇴를 마무리한다 — 소유 데이터 정리, 재가입 제한 기록, 계정 삭제.
 ///
 /// 계정 삭제까지 백엔드가 하는 이유는 "탈퇴했다는 기록"과 삭제가 반드시 함께
-/// 남아야 하기 때문이다(verify_backend/api/withdraw.js 참고). 호출 전에
-/// 반드시 재인증을 마쳐야 하고, 본인 소유 데이터는 클라이언트가 먼저 지운다.
+/// 남아야 하기 때문이다(verify_backend/api/withdraw.js 참고). 호출 전에 반드시
+/// 재인증을 마쳐야 하며, 본인 소유 데이터도 같은 서버 요청 안에서 정리한다.
 ///
 /// 실패하면 예외를 던진다 — 계정이 남아 있는데 성공으로 처리하면 사용자는
 /// 탈퇴된 줄 알고 있다가 다음 실행에서 그대로 로그인된 화면을 보게 된다.
 Future<void> withdrawAccount() async {
   final user = FirebaseAuth.instance.currentUser;
   if (user == null) return;
-  final idToken = await user.getIdToken();
 
-  final response = await http.post(
+  final response = await postBackend(
     Uri.parse('$kVerifyBackendUrl/api/withdraw'),
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': 'Bearer $idToken',
-    },
+    headers: await backendSecurityHeaders(authenticate: true),
   );
   if (response.statusCode >= 400) {
     final decoded = response.body.isEmpty

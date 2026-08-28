@@ -7,9 +7,9 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:450095922894:android:d6cb609341b5584471da9f",
+        "mobilesdk_app_id": "1:450095922894:android:3c749a9d23a5ce2f71da9f",
         "android_client_info": {
-          "package_name": "com.example.latte"
+          "package_name": "io.github.seungmin7676.yeogiitdae"
         }
       },
       "oauth_client": [],

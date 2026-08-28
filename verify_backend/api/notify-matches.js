@@ -1,14 +1,80 @@
-const { initAdmin, setCors, requireUser } = require('../_lib');
+const crypto = require('node:crypto');
+const {
+  initAdmin,
+  setCors,
+  requireUser,
+  enforceAppCheckIfConfigured,
+  enforceRateLimit,
+  isVerifiedHallymUser,
+} = require('../_lib');
 const { sendPushToUser } = require('../_push');
-const { normalizeForSearch } = require('../_search');
+const { buildSearchTokens, normalizeForSearch } = require('../_search');
 
 // 한 번 등록으로 만들 수 있는 알림 수 상한. 인기 카테고리를 아주 많은 사람이
 // 구독한 경우에도 한 요청이 무한정 길어지지 않도록 자른다(서버리스 실행
 // 시간 제한도 있다).
 const MAX_MATCHES = 500;
 
-// Firestore 배치는 최대 500개 작업까지만 허용하므로 청크로 나눠 커밋한다.
-const BATCH_CHUNK = 450;
+const QUERY_TOKEN_CHUNK = 30;
+
+function deliveryId(itemId, recipientUid) {
+  return crypto
+    .createHash('sha256')
+    .update(`keyword-match:${itemId}:${recipientUid}`)
+    .digest('hex');
+}
+
+async function candidateSubscriptions(db, itemTokens, category) {
+  const candidates = new Map();
+  for (let i = 0; i < itemTokens.length; i += QUERY_TOKEN_CHUNK) {
+    const chunk = itemTokens.slice(i, i + QUERY_TOKEN_CHUNK);
+    if (chunk.length === 0) continue;
+    const snap = await db
+      .collection('savedSearches')
+      .where('keywordTokens', 'array-contains-any', chunk)
+      .limit(MAX_MATCHES)
+      .get();
+    snap.docs.forEach((doc) => candidates.set(doc.id, doc));
+    if (candidates.size >= MAX_MATCHES) break;
+  }
+  if (category && candidates.size < MAX_MATCHES) {
+    const snap = await db
+      .collection('savedSearches')
+      .where('categories', 'array-contains', category)
+      .limit(MAX_MATCHES)
+      .get();
+    snap.docs.forEach((doc) => candidates.set(doc.id, doc));
+  }
+  return [...candidates.values()].slice(0, MAX_MATCHES);
+}
+
+async function reserveNotification(admin, db, decoded, itemId, title, match) {
+  const id = deliveryId(itemId, match.recipientUid);
+  const deliveryRef = db.collection('keywordDeliveries').doc(id);
+  const notificationRef = db.collection('notifications').doc(id);
+  return db.runTransaction(async (tx) => {
+    const existing = await tx.get(deliveryRef);
+    if (existing.exists) return false;
+    tx.create(deliveryRef, {
+      itemId,
+      recipientUid: match.recipientUid,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    });
+    tx.set(notificationRef, {
+      recipientUid: match.recipientUid,
+      senderUid: decoded.uid,
+      type: 'keyword_match',
+      matchType: match.matchType,
+      keyword: match.keyword,
+      itemId,
+      itemTitle: title,
+      read: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    return true;
+  });
+}
 
 /**
  * 새 글의 키워드·카테고리 구독자에게 인앱 알림과 푸시를 보낸다.
@@ -28,13 +94,23 @@ module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).json({ error: 'method-not-allowed' });
 
   const admin = initAdmin();
+  if (!(await enforceAppCheckIfConfigured(req, res, 'notify-matches'))) return;
   const decoded = await requireUser(req, res);
   if (!decoded) return;
+  if (!isVerifiedHallymUser(decoded)) {
+    return res.status(403).json({ error: 'verified-hallym-user-required' });
+  }
 
   const itemId = req.body && req.body.itemId;
   if (!itemId || typeof itemId !== 'string') {
     return res.status(400).json({ error: 'missing-item' });
   }
+  if (!(await enforceRateLimit(admin, req, res, {
+    scope: 'notify-matches-user',
+    identifier: decoded.uid,
+    max: 30,
+    windowMs: 10 * 60 * 1000,
+  }))) return;
 
   const db = admin.firestore();
   const itemDoc = await db.collection('items').doc(itemId).get();
@@ -57,11 +133,14 @@ module.exports = async (req, res) => {
   const haystack =
     normalizeForSearch(title) + normalizeForSearch(item.description || '');
 
-  const snap = await db.collection('savedSearches').get();
+  const itemTokens = Array.isArray(item.searchTokens)
+    ? item.searchTokens.filter((value) => typeof value === 'string')
+    : buildSearchTokens(title, item.description || '');
+  const subscriptionDocs = await candidateSubscriptions(db, itemTokens, category);
 
   /** @type {{recipientUid: string, matchType: string, keyword: string}[]} */
   const matches = [];
-  for (const doc of snap.docs) {
+  for (const doc of subscriptionDocs) {
     if (doc.id === decoded.uid) continue;
     if (matches.length >= MAX_MATCHES) break;
 
@@ -89,29 +168,21 @@ module.exports = async (req, res) => {
     return res.status(200).json({ ok: true, matched: 0 });
   }
 
-  // 인앱 알림 문서. 배치가 통째로 실패해 하나도 안 남는 일이 없도록 청크로 나눈다.
-  for (let i = 0; i < matches.length; i += BATCH_CHUNK) {
-    const chunk = matches.slice(i, i + BATCH_CHUNK);
-    const batch = db.batch();
-    for (const m of chunk) {
-      batch.set(db.collection('notifications').doc(), {
-        recipientUid: m.recipientUid,
-        senderUid: decoded.uid,
-        type: 'keyword_match',
-        matchType: m.matchType,
-        keyword: m.keyword,
-        itemId,
-        itemTitle: title,
-        read: false,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+  // itemId+수신자 조합을 서버에서 예약하고 같은 ID의 인앱 알림을 쓴다.
+  // 클라이언트 재시도·연타가 와도 한 사람에게 한 번만 남는다.
+  const reservedMatches = [];
+  for (const match of matches) {
+    if (await reserveNotification(admin, db, decoded, itemId, title, match)) {
+      reservedMatches.push(match);
     }
-    await batch.commit();
+  }
+  if (reservedMatches.length === 0) {
+    return res.status(200).json({ ok: true, matched: 0, skipped: 'duplicate' });
   }
 
   // 백그라운드 푸시. 한 명이 실패해도 나머지는 계속 보낸다.
   let pushed = 0;
-  for (const m of matches) {
+  for (const m of reservedMatches) {
     try {
       const result = await sendPushToUser(admin, {
         recipientUid: m.recipientUid,
@@ -127,8 +198,11 @@ module.exports = async (req, res) => {
       if (!result.skipped) pushed += 1;
     } catch (e) {
       console.error('[notify-matches] push failed for', m.recipientUid, e.message);
+      // 알림 문서는 결정적 ID라 중복되지 않는다. 예약만 풀어 다음 요청에서
+      // 푸시를 재시도할 수 있게 한다.
+      await db.collection('keywordDeliveries').doc(deliveryId(itemId, m.recipientUid)).delete();
     }
   }
 
-  return res.status(200).json({ ok: true, matched: matches.length, pushed });
+  return res.status(200).json({ ok: true, matched: reservedMatches.length, pushed });
 };

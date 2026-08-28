@@ -1,0 +1,6 @@
+# 이 파일을 key.properties로 복사한 뒤 실제 값으로 바꾸세요.
+# key.properties와 *.jks는 .gitignore에 포함되어 커밋되지 않습니다.
+storePassword=CHANGE_ME
+keyPassword=CHANGE_ME
+keyAlias=upload
+storeFile=../upload-keystore.jks

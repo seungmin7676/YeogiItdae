@@ -6,6 +6,7 @@ import '../models/lost_found_item.dart';
 import '../services/bulk_item_actions.dart';
 import '../services/error_messages.dart';
 import '../services/item_queries.dart';
+import '../services/item_deletion.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/confirm_dialog.dart';
@@ -69,7 +70,10 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
   // 같은 작업이 두 번 실행되는 것을 UI 계층에서 막는다. (서비스 계층의
   // in-flight 방어와 이중 안전장치)
   bool _isBulkWorking = false;
-  final BulkItemActions _bulkActions = BulkItemActions(itemsCollection);
+  final BulkItemActions _bulkActions = BulkItemActions(
+    itemsCollection,
+    deleteById: deleteItemOnServer,
+  );
 
   Query<Map<String, dynamic>> _query(String? uid) => buildMyPostsQuery(
     collection: itemsCollection,

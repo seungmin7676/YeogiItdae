@@ -1,5 +1,5 @@
 name: latte
-description: "A new Flutter project."
+description: "한림대학교 구성원을 위한 분실물 찾기 서비스 여기있대!"
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -39,19 +39,24 @@ dependencies:
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  firebase_core: ^4.11.0
-  cloud_firestore: ^6.6.0
-  firebase_auth: ^6.5.4
+  # Flutter 3.44의 AGP 9/Built-in Kotlin 전환기에는 일부 최신 FlutterFire
+  # 패치가 Android 내부 registrar를 컴파일하지 못한다. APK/AAB 검증이 끝난
+  # 호환 묶음을 함께 고정하고, FlutterFire가 이 조합을 지원한 뒤 일괄 갱신한다.
+  firebase_core: 4.12.1
+  cloud_firestore: 6.7.1
+  firebase_auth: 6.5.6
   http: ^1.6.0
   image_picker: ^1.2.3
-  share_plus: ^11.0.0
+  # 12+는 현재 프로젝트의 Gradle/Kotlin 조합에서 Android 플러그인 내부
+  # 클래스를 찾지 못해 실제 APK 컴파일이 실패한다. 빌드 검증된 최신 11.x 고정.
+  share_plus: ^11.1.0
   gal: ^2.3.0
   shared_preferences: ^2.5.5
   cached_network_image: ^3.4.1
-  firebase_app_check: ^0.4.5+2
-  firebase_crashlytics: ^5.2.6
-  firebase_analytics: ^12.4.5
-  firebase_messaging: ^16.4.3
+  firebase_app_check: 0.4.5+2
+  firebase_crashlytics: 5.2.6
+  firebase_analytics: 12.4.5
+  firebase_messaging: 16.4.3
   flutter_local_notifications: ^22.2.0
 
 dev_dependencies:

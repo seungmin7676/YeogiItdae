@@ -93,50 +93,59 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text(
-                  '가입 중 프로필 저장이 완료되지 않았어요.\n'
-                  '실명 공개 등 신원 확인 기능을 사용하려면\n'
-                  '아래 정보를 다시 입력해주세요.',
-                  style: TextStyle(color: AppColors.inkMuted, height: 1.5),
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: kFormMaxWidth),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    const Text(
+                      '가입 중 프로필 저장이 완료되지 않았어요.\n'
+                      '실명 공개 등 신원 확인 기능을 사용하려면\n'
+                      '아래 정보를 다시 입력해주세요.',
+                      style: TextStyle(color: AppColors.inkMuted, height: 1.5),
+                    ),
+                    const SizedBox(height: 20),
+                    TextFormField(
+                      controller: _realNameController,
+                      validator: _validateRealName,
+                      decoration: appInputDecoration('이름', hint: '실명'),
+                    ),
+                    const SizedBox(height: 14),
+                    DepartmentField(
+                      controller: _departmentController,
+                      validator: _validateDepartment,
+                    ),
+                    const SizedBox(height: 14),
+                    TextFormField(
+                      controller: _studentIdController,
+                      keyboardType: TextInputType.number,
+                      validator: _validateStudentId,
+                      decoration: appInputDecoration(
+                        '학번 또는 사번',
+                        hint: '숫자만 입력',
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    ElevatedButton(
+                      onPressed: _isSubmitting ? null : _submit,
+                      child: _isSubmitting
+                          ? const SizedBox(
+                              width: 22,
+                              height: 22,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Text('저장하고 시작하기'),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 20),
-                TextFormField(
-                  controller: _realNameController,
-                  validator: _validateRealName,
-                  decoration: appInputDecoration('이름', hint: '실명'),
-                ),
-                const SizedBox(height: 14),
-                DepartmentField(
-                  controller: _departmentController,
-                  validator: _validateDepartment,
-                ),
-                const SizedBox(height: 14),
-                TextFormField(
-                  controller: _studentIdController,
-                  keyboardType: TextInputType.number,
-                  validator: _validateStudentId,
-                  decoration: appInputDecoration('학번 또는 사번', hint: '숫자만 입력'),
-                ),
-                const SizedBox(height: 20),
-                ElevatedButton(
-                  onPressed: _isSubmitting ? null : _submit,
-                  child: _isSubmitting
-                      ? const SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Text('저장하고 시작하기'),
-                ),
-              ],
+              ),
             ),
           ),
         ),

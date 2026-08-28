@@ -10,7 +10,7 @@ const PAGE_SIZE = 300;
 const BATCH_CHUNK = 450;
 
 /**
- * 서버 검색이 도입되기 전에 등록된 글에 searchTokens를 채워 넣는다(관리자 전용).
+ * 서버 검색·숨김 필터가 도입되기 전에 등록된 글에 필수 필드를 채운다(관리자 전용).
  *
  * 검색은 `searchTokens` 배열을 arrayContains로 조회하므로, 이 필드가 없는
  * 예전 글은 **검색 결과에 아예 나오지 않는다.** 배포 후 한 번은 반드시
@@ -54,11 +54,17 @@ module.exports = async (req, res) => {
   const pending = [];
   for (const doc of snap.docs) {
     const data = doc.data() || {};
-    // 이미 채워진 글은 건너뛴다 — 여러 번 돌려도 안전하도록.
-    if (Array.isArray(data.searchTokens) && data.searchTokens.length > 0) continue;
+    const update = {};
+    if (!Array.isArray(data.searchTokens) || data.searchTokens.length === 0) {
+      update.searchTokens = buildSearchTokens(data.title || '', data.description || '');
+    }
+    // 목록 규칙과 모든 앱 쿼리는 hidden == false를 명시한다. 이 필드가 없던
+    // 예전 글은 백필하지 않으면 안전하게 거부돼 피드에서 사라져 보인다.
+    if (typeof data.hidden !== 'boolean') update.hidden = false;
+    if (Object.keys(update).length === 0) continue;
     pending.push({
       ref: doc.ref,
-      tokens: buildSearchTokens(data.title || '', data.description || ''),
+      update,
     });
   }
 
@@ -66,7 +72,7 @@ module.exports = async (req, res) => {
     const chunk = pending.slice(i, i + BATCH_CHUNK);
     const batch = db.batch();
     for (const p of chunk) {
-      batch.set(p.ref, { searchTokens: p.tokens }, { merge: true });
+      batch.set(p.ref, p.update, { merge: true });
     }
     await batch.commit();
   }

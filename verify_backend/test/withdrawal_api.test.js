@@ -34,7 +34,7 @@ before((t) => {
       }),
     },
   });
-  admin = require('firebase-admin');
+  admin = require('../_admin');
   ({ emailKey } = require('../_withdrawal'));
 });
 
@@ -119,6 +119,192 @@ test('withdraw: 탈퇴자가 남긴 신고 기록도 함께 정리된다', async
   const other = await db.collection('reports').doc('item1_other').get();
   assert.equal(mine.exists, false, '본인 신고는 지워져야 한다');
   assert.equal(other.exists, true, '다른 사람 신고는 남아야 한다');
+});
+
+test('withdraw removes all server-owned user data across batches', async () => {
+  const withdraw = require('../api/withdraw');
+  const { idToken, localId } = await signUpTestUser(
+    'cleanup@hallym.ac.kr',
+    'password123',
+  );
+  const db = admin.firestore();
+
+  const queriedCollections = [
+    ['items', 'authorUid'],
+    ['reports', 'reporterUid'],
+    ['bugReports', 'reporterUid'],
+    ['reportAppeals', 'authorUid'],
+  ];
+  await Promise.all(
+    queriedCollections.flatMap(([collection, ownerField]) => [
+      db.collection(collection).doc(`mine-${collection}`).set({
+        [ownerField]: localId,
+      }),
+      db.collection(collection).doc(`other-${collection}`).set({
+        [ownerField]: 'other-uid',
+      }),
+    ]),
+  );
+
+  // Exercise the second cleanup page beyond the 450-write safety margin.
+  const notificationBatch = db.batch();
+  for (let i = 0; i < 451; i += 1) {
+    notificationBatch.set(db.collection('notifications').doc(`mine-${i}`), {
+      recipientUid: localId,
+    });
+  }
+  await notificationBatch.commit();
+  await db.collection('notifications').doc('other-notification').set({
+    recipientUid: 'other-uid',
+  });
+  await db.collection('notifications').doc('sent-notification').set({
+    recipientUid: 'other-uid',
+    senderUid: localId,
+  });
+  await db.collection('reports').doc('authored-report').set({
+    reporterUid: 'other-uid',
+    authorUid: localId,
+  });
+
+  await db.collection('chats').doc('shared-chat').set({
+    participants: [localId, 'other-uid'],
+    participantNicknames: { [localId]: '탈퇴 전 닉네임', 'other-uid': '상대방' },
+    revealedRealNames: { [localId]: '홍길동 (20240001)' },
+    typing: { [localId]: true, 'other-uid': false },
+    unreadCount: { [localId]: 3, 'other-uid': 1 },
+    clearedAt: { [localId]: admin.firestore.Timestamp.now() },
+    lastReadAt: { [localId]: admin.firestore.Timestamp.now() },
+    itemAuthorUid: localId,
+    lastMessage: '탈퇴자가 보낸 마지막 메시지',
+  });
+  await db
+    .collection('chats')
+    .doc('shared-chat')
+    .collection('messages')
+    .doc('mine')
+    .set({ senderUid: localId, type: 'text', text: '삭제 대상' });
+  await db
+    .collection('chats')
+    .doc('shared-chat')
+    .collection('messages')
+    .doc('other')
+    .set({
+      senderUid: 'other-uid',
+      type: 'text',
+      text: '남는 메시지',
+      createdAt: admin.firestore.Timestamp.now(),
+    });
+
+  const directCollections = [
+    'userPrivate',
+    'blocks',
+    'bookmarks',
+    'userPublicProfiles',
+    'userSettings',
+    'savedSearches',
+    'fcmTokens',
+  ];
+  await Promise.all(
+    directCollections.flatMap((collection) => [
+      db.collection(collection).doc(localId).set({ owner: localId }),
+      db.collection(collection).doc('other-uid').set({ owner: 'other-uid' }),
+    ]),
+  );
+
+  const res = mockRes();
+  await withdraw(
+    mockReq({ headers: { authorization: `Bearer ${idToken}` } }),
+    res,
+  );
+  assert.equal(res.statusCode, 200);
+
+  for (const [collection] of queriedCollections) {
+    assert.equal(
+      (await db.collection(collection).doc(`mine-${collection}`).get()).exists,
+      false,
+      `${collection}: caller-owned document should be deleted`,
+    );
+    assert.equal(
+      (await db.collection(collection).doc(`other-${collection}`).get()).exists,
+      true,
+      `${collection}: another user's document should remain`,
+    );
+  }
+  assert.equal(
+    (
+      await db
+        .collection('notifications')
+        .where('recipientUid', '==', localId)
+        .get()
+    ).size,
+    0,
+  );
+  assert.equal(
+    (await db.collection('notifications').doc('other-notification').get()).exists,
+    true,
+  );
+  assert.equal(
+    (await db.collection('notifications').doc('sent-notification').get()).exists,
+    false,
+  );
+  assert.equal(
+    (await db.collection('reports').doc('authored-report').get()).exists,
+    false,
+  );
+
+  const anonymizedChat = (
+    await db.collection('chats').doc('shared-chat').get()
+  ).data();
+  const tombstoneUid = anonymizedChat.participants.find(
+    (participant) => participant !== 'other-uid',
+  );
+  assert.match(tombstoneUid, /^deleted_[0-9a-f]{24}$/);
+  assert.equal(anonymizedChat.participants.includes(localId), false);
+  assert.equal(anonymizedChat.participantNicknames[localId], undefined);
+  assert.equal(anonymizedChat.participantNicknames[tombstoneUid], '탈퇴한 사용자');
+  assert.equal(anonymizedChat.revealedRealNames?.[localId], undefined);
+  assert.equal(anonymizedChat.typing?.[localId], undefined);
+  assert.equal(anonymizedChat.unreadCount?.[localId], undefined);
+  assert.equal(anonymizedChat.clearedAt?.[localId], undefined);
+  assert.equal(anonymizedChat.lastReadAt?.[localId], undefined);
+  assert.equal(anonymizedChat.itemAuthorUid, tombstoneUid);
+  assert.equal(anonymizedChat.itemDeleted, true);
+  assert.equal(anonymizedChat.lastMessage, '남는 메시지');
+  assert.equal(
+    (
+      await db
+        .collection('chats')
+        .doc('shared-chat')
+        .collection('messages')
+        .doc('mine')
+        .get()
+    ).exists,
+    false,
+  );
+  assert.equal(
+    (
+      await db
+        .collection('chats')
+        .doc('shared-chat')
+        .collection('messages')
+        .doc('other')
+        .get()
+    ).exists,
+    true,
+  );
+
+  for (const collection of directCollections) {
+    assert.equal(
+      (await db.collection(collection).doc(localId).get()).exists,
+      false,
+      `${collection}: caller-owned document should be deleted`,
+    );
+    assert.equal(
+      (await db.collection(collection).doc('other-uid').get()).exists,
+      true,
+      `${collection}: another user's document should remain`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------

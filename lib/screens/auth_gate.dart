@@ -3,7 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../services/onboarding_service.dart';
-import '../theme/app_theme.dart';
+import '../widgets/full_screen_status.dart';
 import 'complete_profile_screen.dart';
 import 'email_verification_screen.dart';
 import 'login_screen.dart';
@@ -11,18 +11,40 @@ import 'main_nav_screen.dart';
 import 'onboarding_screen.dart';
 
 /// 로그인 상태에 따라 로그인/이메일 인증 대기/메인 피드 화면을 전환한다.
-class AuthGate extends StatelessWidget {
+class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
+
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  late Stream<User?> _authStream = FirebaseAuth.instance.userChanges();
+
+  void _retry() {
+    setState(() => _authStream = FirebaseAuth.instance.userChanges());
+  }
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.userChanges(),
+      stream: _authStream,
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Scaffold(
+            body: FullScreenStatus(
+              title: '로그인 상태를 확인하지 못했어요',
+              message: '네트워크 연결을 확인한 뒤 다시 시도해주세요.',
+              actionLabel: '다시 시도',
+              onAction: _retry,
+            ),
+          );
+        }
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(
-            body: Center(
-              child: CircularProgressIndicator(color: AppColors.primary),
+            body: FullScreenStatus.loading(
+              title: '로그인 정보를 확인하고 있어요',
+              message: '잠시만 기다려주세요.',
             ),
           );
         }
@@ -43,31 +65,58 @@ class AuthGate extends StatelessWidget {
 /// 회원가입 중 네트워크 오류 등으로 userPrivate 문서 생성이 실패하면
 /// 실명 공개 등 신원 관련 기능이 영구히 깨질 수 있으므로, 로그인 때마다
 /// 문서 존재 여부를 확인하고 없으면 프로필을 다시 입력받는다.
-class _ProfileGate extends StatelessWidget {
+class _ProfileGate extends StatefulWidget {
   final String uid;
   final String nickname;
 
   const _ProfileGate({required this.uid, required this.nickname});
 
   @override
+  State<_ProfileGate> createState() => _ProfileGateState();
+}
+
+class _ProfileGateState extends State<_ProfileGate> {
+  late Stream<DocumentSnapshot<Map<String, dynamic>>> _profileStream =
+      _createStream();
+
+  Stream<DocumentSnapshot<Map<String, dynamic>>> _createStream() =>
+      FirebaseFirestore.instance
+          .collection('userPrivate')
+          .doc(widget.uid)
+          .snapshots();
+
+  void _retry() => setState(() => _profileStream = _createStream());
+
+  @override
   Widget build(BuildContext context) {
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('userPrivate')
-          .doc(uid)
-          .snapshots(),
+      stream: _profileStream,
       builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return Scaffold(
+            body: FullScreenStatus(
+              title: '프로필 정보를 확인하지 못했어요',
+              message: '입력한 정보는 변경되지 않았어요.\n연결 상태를 확인하고 다시 시도해주세요.',
+              actionLabel: '다시 시도',
+              onAction: _retry,
+            ),
+          );
+        }
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Scaffold(
-            body: Center(
-              child: CircularProgressIndicator(color: AppColors.primary),
+            body: FullScreenStatus.loading(
+              title: '프로필을 준비하고 있어요',
+              message: '잠시만 기다려주세요.',
             ),
           );
         }
         if (snapshot.data?.exists != true) {
-          return CompleteProfileScreen(uid: uid, nickname: nickname);
+          return CompleteProfileScreen(
+            uid: widget.uid,
+            nickname: widget.nickname,
+          );
         }
-        return _OnboardingGate(uid: uid);
+        return _OnboardingGate(uid: widget.uid);
       },
     );
   }
@@ -91,22 +140,47 @@ class _OnboardingGate extends StatefulWidget {
 
 class _OnboardingGateState extends State<_OnboardingGate> {
   bool? _hasSeen;
+  bool _hasError = false;
 
   @override
   void initState() {
     super.initState();
-    hasSeenOnboarding(widget.uid).then((seen) {
+    _load(showLoading: false);
+  }
+
+  Future<void> _load({bool showLoading = true}) async {
+    if (showLoading && mounted) {
+      setState(() {
+        _hasSeen = null;
+        _hasError = false;
+      });
+    }
+    try {
+      final seen = await hasSeenOnboarding(widget.uid);
       if (mounted) setState(() => _hasSeen = seen);
-    });
+    } catch (_) {
+      if (mounted) setState(() => _hasError = true);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    if (_hasError) {
+      return Scaffold(
+        body: FullScreenStatus(
+          title: '시작 안내를 불러오지 못했어요',
+          message: '네트워크 연결을 확인한 뒤 다시 시도해주세요.',
+          actionLabel: '다시 시도',
+          onAction: _load,
+        ),
+      );
+    }
     final hasSeen = _hasSeen;
     if (hasSeen == null) {
       return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(color: AppColors.primary),
+        body: FullScreenStatus.loading(
+          title: '앱을 준비하고 있어요',
+          message: '잠시만 기다려주세요.',
         ),
       );
     }
