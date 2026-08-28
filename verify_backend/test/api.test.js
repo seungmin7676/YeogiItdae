@@ -340,7 +340,7 @@ test('delete-my-reports: 본인이 남긴 신고만 지우고 다른 사람 신�
     .doc('item2_other-uid')
     .set({ itemId: 'item2', reporterUid: 'other-uid', reason: '스팸/광고' });
 
-  const deleteMyReports = require('../api/delete-my-reports');
+  const deleteMyReports = require('../maintenance/delete-my-reports');
   const res = mockRes();
   await deleteMyReports(
     mockReq({ headers: { authorization: `Bearer ${idToken}` } }),

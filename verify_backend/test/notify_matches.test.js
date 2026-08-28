@@ -251,11 +251,11 @@ test('notify-matches: 숨김 처리된 글로는 알림을 보내지 않는다',
 });
 
 // ---------------------------------------------------------------------------
-// /api/backfill-search-tokens
+// production API 밖에 보관한 일회성 검색 토큰 백필
 // ---------------------------------------------------------------------------
 
 test('backfill: 관리자가 아니면 403', async () => {
-  const backfill = require('../api/backfill-search-tokens');
+  const backfill = require('../maintenance/backfill-search-tokens');
   const { idToken } = await signUpVerifiedTestUser(
     admin,
     'notadmin@hallym.ac.kr',
@@ -268,7 +268,7 @@ test('backfill: 관리자가 아니면 403', async () => {
 });
 
 test('backfill: 토큰이 없는 예전 글에만 채워 넣는다', async () => {
-  const backfill = require('../api/backfill-search-tokens');
+  const backfill = require('../maintenance/backfill-search-tokens');
   const { idToken } = await signUpVerifiedTestUser(admin, ADMIN_EMAIL, 'password123');
   const db = admin.firestore();
 
@@ -302,7 +302,7 @@ test('backfill: 토큰이 없는 예전 글에만 채워 넣는다', async () =>
 });
 
 test('backfill: 백필한 글이 앱과 같은 토큰으로 검색된다', async () => {
-  const backfill = require('../api/backfill-search-tokens');
+  const backfill = require('../maintenance/backfill-search-tokens');
   const { idToken } = await signUpVerifiedTestUser(admin, ADMIN_EMAIL, 'password123');
   const db = admin.firestore();
   await db.collection('items').doc('old').set({
@@ -323,7 +323,7 @@ test('backfill: 백필한 글이 앱과 같은 토큰으로 검색된다', async
 });
 
 test('backfill: 두 번 돌려도 안전하다(멱등)', async () => {
-  const backfill = require('../api/backfill-search-tokens');
+  const backfill = require('../maintenance/backfill-search-tokens');
   const { idToken } = await signUpVerifiedTestUser(admin, ADMIN_EMAIL, 'password123');
   await admin.firestore().collection('items').doc('old').set({
     title: '지갑',
@@ -341,7 +341,7 @@ test('backfill: 두 번 돌려도 안전하다(멱등)', async () => {
 });
 
 test('saved-search backfill: 기존 구독에 후보 조회 토큰을 채우며 멱등이다', async () => {
-  const backfill = require('../api/backfill-saved-search-tokens');
+  const backfill = require('../maintenance/backfill-saved-search-tokens');
   const { idToken } = await signUpVerifiedTestUser(admin, ADMIN_EMAIL, 'password123');
   const ref = admin.firestore().collection('savedSearches').doc('legacy-user');
   await ref.set({ keywords: ['검은색 백팩', '지갑'], categories: [] });
