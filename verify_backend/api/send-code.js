@@ -1,4 +1,4 @@
-const nodemailer = require('nodemailer');
+const mailer = require('../_mailer');
 const crypto = require('crypto');
 const {
   initAdmin,
@@ -90,7 +90,7 @@ module.exports = async (req, res) => {
     lastSentAt: admin.firestore.FieldValue.serverTimestamp(),
   });
 
-  const transporter = nodemailer.createTransport({
+  const transporter = mailer.createTransport({
     service: 'gmail',
     auth: {
       user: process.env.SMTP_USER,

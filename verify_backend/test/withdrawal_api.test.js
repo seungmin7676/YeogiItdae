@@ -23,8 +23,8 @@ const sentEmails = [];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 before((t) => {
-  // send-code.js가 require('nodemailer')를 하기 전에 목으로 바꿔치기한다.
-  t.mock.module('nodemailer', {
+  // send-code.js가 require('../_mailer')를 하기 전에 목으로 바꿔치기한다.
+  t.mock.module('../_mailer.js', {
     exports: {
       createTransport: () => ({
         sendMail: async (options) => {

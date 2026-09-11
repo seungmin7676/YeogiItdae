@@ -3,6 +3,23 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:latte/services/chat_actions.dart';
 
 void main() {
+  group('shouldStartMessagesStream', () {
+    test('서버에 확정된 채팅방에서만 메시지 스트림을 시작한다', () {
+      expect(
+        shouldStartMessagesStream(chatExists: true, hasPendingWrites: false),
+        isTrue,
+      );
+      expect(
+        shouldStartMessagesStream(chatExists: true, hasPendingWrites: true),
+        isFalse,
+      );
+      expect(
+        shouldStartMessagesStream(chatExists: false, hasPendingWrites: false),
+        isFalse,
+      );
+    });
+  });
+
   late FakeFirebaseFirestore firestore;
   late ChatMessageSender sender;
 

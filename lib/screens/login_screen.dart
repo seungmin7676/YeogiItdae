@@ -63,7 +63,10 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   String? _validatePassword(String? value) {
-    if (value == null || value.length < 8) {
+    if (value == null || value.isEmpty) return '비밀번호를 입력해주세요.';
+    // 새 계정은 8자 이상으로 받되, 로그인은 Firebase의 기존 최소 길이(6자)로
+    // 만들어진 전시 관리자·기존 계정도 사용할 수 있어야 한다.
+    if (_mode == _AuthMode.signup && value.length < 8) {
       return '비밀번호는 8자 이상 입력해주세요.';
     }
     return null;
@@ -89,7 +92,12 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _validateStudentId(String? value) {
     // 학번뿐 아니라 교직원 사번도 함께 입력받는 필드라 자릿수가 1~10자로
     // 다양하다. 형식은 따로 검증하지 않고 입력 여부만 확인한다.
-    if ((value?.trim() ?? '').isEmpty) return '학번을 입력해주세요.';
+    final studentId = value?.trim() ?? '';
+    if (studentId.isEmpty) return '학번을 입력해주세요.';
+    final emailLocalPart = _fullEmail.split('@').first;
+    if (emailLocalPart.isNotEmpty && studentId != emailLocalPart) {
+      return '위 이메일 아이디와 같은 학번·사번을 입력해주세요.';
+    }
     return null;
   }
 
@@ -140,8 +148,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 'realName': _realNameController.text.trim(),
                 'department': _departmentController.text.trim(),
                 'studentId': _studentIdController.text.trim(),
-                'email': email,
-                'createdAt': FieldValue.serverTimestamp(),
               });
         } catch (e) {
           if (mounted) {

@@ -49,7 +49,13 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
   String? _validateStudentId(String? value) {
     // 학번뿐 아니라 교직원 사번도 함께 입력받는 필드라 자릿수가 1~10자로
     // 다양하다. 형식은 따로 검증하지 않고 입력 여부만 확인한다.
-    if ((value?.trim() ?? '').isEmpty) return '학번을 입력해주세요.';
+    final studentId = value?.trim() ?? '';
+    if (studentId.isEmpty) return '학번을 입력해주세요.';
+    final emailLocalPart =
+        FirebaseAuth.instance.currentUser?.email?.split('@').first ?? '';
+    if (emailLocalPart.isNotEmpty && studentId != emailLocalPart) {
+      return '로그인한 이메일과 같은 학번·사번을 입력해주세요.';
+    }
     return null;
   }
 
@@ -65,8 +71,6 @@ class _CompleteProfileScreenState extends State<CompleteProfileScreen> {
             'realName': _realNameController.text.trim(),
             'department': _departmentController.text.trim(),
             'studentId': _studentIdController.text.trim(),
-            'email': FirebaseAuth.instance.currentUser?.email ?? '',
-            'createdAt': FieldValue.serverTimestamp(),
           });
       // 저장이 끝나면 _ProfileGate의 StreamBuilder가 자동으로 감지해
       // MainNavScreen으로 전환하므로 별도 네비게이션이 필요 없다.

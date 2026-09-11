@@ -80,7 +80,7 @@ function externalUser(uid) {
 /** 관리자 계정(firestore.rules의 isAdmin 이메일과 일치). uid는 무관하다. */
 function adminUser() {
   return testEnv.authenticatedContext('admin', {
-    email: '20225216@hallym.ac.kr',
+    email: 'admin1@hallym.ac.kr',
     email_verified: true,
   });
 }
@@ -1160,9 +1160,25 @@ test('bugReports: 일반 사용자는 읽을 수 없고 관리자만 읽을 수 
 test('fcmTokens: 본인은 자기 토큰 문서를 읽고 쓸 수 있다', async () => {
   const db = hallymUser('alice').firestore();
   await assertSucceeds(
-    setDoc(doc(db, 'fcmTokens', 'alice'), { tokens: ['token-a'] }),
+    setDoc(doc(db, 'fcmTokens', 'alice'), {
+      tokens: ['token-a'],
+      updatedAt: serverTimestamp(),
+    }),
   );
   await assertSucceeds(getDoc(doc(db, 'fcmTokens', 'alice')));
+});
+
+test('fcmTokens: 갱신 시각이 없거나 클라이언트가 조작한 토큰 문서는 거부한다', async () => {
+  const db = hallymUser('alice').firestore();
+  await assertFails(
+    setDoc(doc(db, 'fcmTokens', 'alice'), { tokens: ['token-a'] }),
+  );
+  await assertFails(
+    setDoc(doc(db, 'fcmTokens', 'alice'), {
+      tokens: ['token-a'],
+      updatedAt: new Date(0),
+    }),
+  );
 });
 
 test('fcmTokens: 남의 토큰 문서는 읽거나 쓸 수 없다', async () => {

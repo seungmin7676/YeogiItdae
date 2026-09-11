@@ -20,7 +20,7 @@ process.env.FIRESTORE_EMULATOR_HOST = FIRESTORE_EMULATOR_HOST;
 process.env.GCLOUD_PROJECT = PROJECT_ID;
 
 // firestore.rules / lib/services/admin.dart 와 같은 값이어야 한다.
-const ADMIN_EMAIL = '20225216@hallym.ac.kr';
+const ADMIN_EMAIL = 'admin1@hallym.ac.kr';
 
 let admin;
 let buildSearchTokens;

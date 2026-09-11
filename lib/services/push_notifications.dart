@@ -141,6 +141,7 @@ class PushNotifications {
       if (token != null) {
         await FirebaseFirestore.instance.collection('fcmTokens').doc(uid).set({
           'tokens': FieldValue.arrayRemove([token]),
+          'updatedAt': FieldValue.serverTimestamp(),
         }, SetOptions(merge: true));
       }
       await FirebaseMessaging.instance.deleteToken();

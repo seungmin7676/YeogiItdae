@@ -7,8 +7,7 @@ const {
   isVerifiedHallymUser,
 } = require('../_lib');
 const { publicIdFromUrl, destroyPublicId } = require('../_cloudinary');
-
-const ADMIN_EMAIL = '20225216@hallym.ac.kr';
+const { isAdminUser } = require('../_admin_access');
 
 module.exports = async (req, res) => {
   setCors(res);
@@ -40,7 +39,7 @@ module.exports = async (req, res) => {
   ) {
     return res.status(500).json({ error: 'cloudinary-not-configured' });
   }
-  const isAdmin = decoded.email === ADMIN_EMAIL && decoded.email_verified === true;
+  const isAdmin = isAdminUser(decoded);
   const publicIds = [...new Set(urls.map((url) => publicIdFromUrl(url, cloudName)).filter(Boolean))];
   if (publicIds.length !== urls.length) {
     return res.status(400).json({ error: 'invalid-cloudinary-url' });

@@ -9,9 +9,7 @@ const {
   isVerifiedHallymUser,
 } = require('../_lib');
 const { sendPushToUser } = require('../_push');
-
-// firestore.rules / lib/services/admin.dart 의 관리자 이메일과 반드시 일치시킨다.
-const ADMIN_EMAIL = '20225216@hallym.ac.kr';
+const { ADMIN_EMAILS, isAdminUser } = require('../_admin_access');
 
 const CHAT_TYPES = new Set(['chat_started', 'chat_message']);
 const ADMIN_INBOX_TYPES = new Set(['report_received', 'bug_report']);
@@ -148,15 +146,19 @@ async function authorizeAdminInboxPush(admin, db, decoded, requestBody, type) {
 
   let recipientUid;
   try {
-    recipientUid = (await admin.auth().getUserByEmail(ADMIN_EMAIL)).uid;
+    const adminUsers = await Promise.all(
+      [...ADMIN_EMAILS].map((email) => admin.auth().getUserByEmail(email).catch(() => null)),
+    );
+    recipientUid = adminUsers.find(Boolean)?.uid;
   } catch (_) {
     return { skipped: 'no-admin-account' };
   }
+  if (!recipientUid) return { skipped: 'no-admin-account' };
   return { recipientUid, type, title, body, data, sourceKey };
 }
 
 function authorizeModerationPush(decoded, requestBody, type) {
-  if (decoded.email !== ADMIN_EMAIL || decoded.email_verified !== true) return null;
+  if (!isAdminUser(decoded)) return null;
   const recipientUid = nonEmptyString(requestBody.recipientUid);
   const itemId = nonEmptyString(requestBody.data?.itemId);
   if (!recipientUid || !itemId) return null;

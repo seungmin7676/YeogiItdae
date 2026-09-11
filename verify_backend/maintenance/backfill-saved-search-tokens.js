@@ -1,10 +1,10 @@
 const { initAdmin, setCors, requireUser } = require('../_lib');
 const { buildSearchTokens } = require('../_search');
+const { isAdminUser } = require('../_admin_access');
 
 // 운영 데이터 백필이 완료된 일회성 도구다. Vercel 배포 함수 수에 포함되지
 // 않도록 maintenance에 보관한다.
 
-const ADMIN_EMAIL = '20225216@hallym.ac.kr';
 const PAGE_SIZE = 300;
 
 function keywordTokens(keywords) {
@@ -26,7 +26,7 @@ module.exports = async (req, res) => {
   const admin = initAdmin();
   const decoded = await requireUser(req, res);
   if (!decoded) return;
-  if (decoded.email !== ADMIN_EMAIL || decoded.email_verified !== true) {
+  if (!isAdminUser(decoded)) {
     return res.status(403).json({ error: 'admin-only' });
   }
 
