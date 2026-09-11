@@ -18,12 +18,18 @@ service cloud.firestore {
     }
 
     // 관리자 계정. 신고 검토(reports 열람/삭제)와 게시글 숨김/삭제 권한을
-    // 가진 단일 계정으로, 인증된 이메일 토큰으로 식별한다(위조 불가).
-    // 클라이언트(lib/services/admin.dart)의 kAdminEmail과 반드시 일치시킨다.
+    // 가진 전시 운영 계정으로, 인증된 이메일 토큰으로 식별한다(위조 불가).
+    // 클라이언트(lib/services/admin.dart)의 kAdminEmails와 반드시 일치시킨다.
     function isAdmin() {
       return request.auth != null
           && request.auth.token.email_verified == true
-          && request.auth.token.email == '20225216@hallym.ac.kr';
+          && request.auth.token.email in [
+               'admin1@hallym.ac.kr',
+               'admin2@hallym.ac.kr',
+               'admin3@hallym.ac.kr',
+               'admin4@hallym.ac.kr',
+               'admin5@hallym.ac.kr'
+             ];
     }
 
     function isCloudinaryUrl(value) {
@@ -604,9 +610,10 @@ service cloud.firestore {
       allow read: if isVerifiedHallymUser() && request.auth.uid == uid;
       allow write: if isVerifiedHallymUser()
                    && request.auth.uid == uid
-                   && request.resource.data.keys().hasOnly(['tokens'])
+                   && request.resource.data.keys().hasOnly(['tokens', 'updatedAt'])
                    && request.resource.data.tokens is list
-                   && request.resource.data.tokens.size() <= 20;
+                   && request.resource.data.tokens.size() <= 20
+                   && request.resource.data.updatedAt == request.time;
     }
 
     // 알림: 수신자 본인만 읽기/삭제/읽음처리 가능.

@@ -21,6 +21,7 @@ import '../widgets/confirm_dialog.dart';
 import '../widgets/feed_message.dart';
 import '../widgets/image_source_sheet.dart';
 import '../widgets/user_profile.dart';
+import 'item_detail_sheet.dart';
 
 /// 화면: 1:1 채팅
 class ChatScreen extends StatefulWidget {
@@ -92,37 +93,34 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _markAsRead();
-    // 채팅방을 켜둔 채로 새 메시지가 도착해도 안읽음 처리되지 않도록,
-    // 메시지가 갱신될 때마다 읽음 시각을 함께 갱신한다. 전체 기록을 다시
-    // 읽지 않도록 가장 최근 문서 1개만 구독한다.
-    _messagesSub = _messagesRef
-        .orderBy('createdAt', descending: true)
-        .limit(1)
-        .snapshots()
-        .listen((_) {
-          _markAsRead();
-        });
-    _chatSub = _chatRef.snapshots().listen(
-      (snap) {
-        if (!mounted) return;
-        setState(() {
-          _chatLoaded = true;
-          _chatFailed = false;
-          _chatData = snap.data();
-          if (snap.exists) _ensureMessagesStream();
-        });
-      },
-      onError: (_) {
-        // 채팅방 문서를 못 읽어도(권한·네트워크) 화면이 스피너에 영원히
-        // 갇히지 않도록, 로딩을 끝내고 다시 시도할 수 있는 안내를 보여준다.
-        if (mounted) {
-          setState(() {
-            _chatLoaded = true;
-            _chatFailed = true;
-          });
-        }
-      },
-    );
+    _chatSub = _chatRef
+        .snapshots(includeMetadataChanges: true)
+        .listen(
+          (snap) {
+            if (!mounted) return;
+            setState(() {
+              _chatLoaded = true;
+              _chatFailed = false;
+              _chatData = snap.data();
+              if (shouldStartMessagesStream(
+                chatExists: snap.exists,
+                hasPendingWrites: snap.metadata.hasPendingWrites,
+              )) {
+                _ensureMessagesStream();
+              }
+            });
+          },
+          onError: (_) {
+            // 채팅방 문서를 못 읽어도(권한·네트워크) 화면이 스피너에 영원히
+            // 갇히지 않도록, 로딩을 끝내고 다시 시도할 수 있는 안내를 보여준다.
+            if (mounted) {
+              setState(() {
+                _chatLoaded = true;
+                _chatFailed = true;
+              });
+            }
+          },
+        );
   }
 
   /// 메시지 스트림을 아직 안 만들었으면 만든다(이미 있으면 그대로 둔다).
@@ -139,6 +137,21 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       query = query.where('createdAt', isGreaterThan: clearedAt);
     }
     _messagesStream = query.snapshots();
+
+    // 채팅방을 켜둔 채로 새 메시지가 도착해도 안읽음 처리되지 않도록,
+    // 메시지가 갱신될 때마다 읽음 시각을 함께 갱신한다. 부모 채팅방 문서가
+    // 서버에 커밋된 뒤에만 구독해서 첫 메시지 생성 직후 권한 오류도 피한다.
+    _messagesSub ??= _messagesRef
+        .orderBy('createdAt', descending: true)
+        .limit(1)
+        .snapshots()
+        .listen(
+          (_) {
+            _markAsRead();
+          },
+          // 읽음 갱신용 보조 구독의 오류는 대화 본문에 노출하지 않는다.
+          onError: (_) {},
+        );
   }
 
   @override
@@ -284,6 +297,37 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       body: body,
       data: {'chatId': widget.chatId, 'messageId': messageId},
     );
+  }
+
+  Future<void> _openItemDetail() async {
+    final itemId = widget.itemId ?? _chatData?['itemId'] as String?;
+    if (itemId == null || itemId.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('연결된 게시글 정보를 찾을 수 없어요.')));
+      }
+      return;
+    }
+
+    try {
+      final itemDoc = await itemsCollection.doc(itemId).get();
+      if (!mounted) return;
+      if (!itemDoc.exists) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('삭제된 게시글이에요.')));
+        return;
+      }
+      showItemDetailSheet(context, LostFoundItem.fromDoc(itemDoc));
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('게시글을 불러오지 못했어요: ${friendlyErrorMessage(error)}'),
+        ),
+      );
+    }
   }
 
   Future<void> _markAsRead() async {
@@ -817,59 +861,66 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         backgroundColor: AppColors.bg,
         elevation: 0,
         titleSpacing: 4,
-        title: Row(
-          children: [
-            UserProfileAvatar(
-              uid: widget.otherUid,
-              fallbackNickname: widget.otherNickname,
-              size: 34,
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    widget.otherNickname,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 15,
-                      color: AppColors.ink,
-                    ),
-                  ),
-                  Builder(
-                    builder: (context) {
-                      final typing = Map<String, dynamic>.from(
-                        _chatData?['typing'] as Map? ?? const {},
-                      );
-                      final isOtherTyping =
-                          typing[widget.otherUid] as bool? ?? false;
-                      if (isOtherTyping) {
-                        return const Text(
-                          '입력 중...',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        );
-                      }
-                      return Text(
-                        widget.itemTitle,
-                        maxLines: 1,
+        title: InkWell(
+          borderRadius: BorderRadius.circular(kRadiusMd),
+          onTap: _openItemDetail,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Row(
+              children: [
+                UserProfileAvatar(
+                  uid: widget.otherUid,
+                  fallbackNickname: widget.otherNickname,
+                  size: 34,
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        widget.otherNickname,
                         style: const TextStyle(
-                          fontSize: 12,
-                          color: AppColors.inkMuted,
+                          fontWeight: FontWeight.w700,
+                          fontSize: 15,
+                          color: AppColors.ink,
                         ),
-                        overflow: TextOverflow.ellipsis,
-                      );
-                    },
+                      ),
+                      Builder(
+                        builder: (context) {
+                          final typing = Map<String, dynamic>.from(
+                            _chatData?['typing'] as Map? ?? const {},
+                          );
+                          final isOtherTyping =
+                              typing[widget.otherUid] as bool? ?? false;
+                          if (isOtherTyping) {
+                            return const Text(
+                              '입력 중...',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: AppColors.primary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            );
+                          }
+                          return Text(
+                            widget.itemTitle,
+                            maxLines: 1,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.inkMuted,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          );
+                        },
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
         actions: [
           Builder(

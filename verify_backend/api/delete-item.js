@@ -7,8 +7,8 @@ const {
   isVerifiedHallymUser,
 } = require('../_lib');
 const { deleteCloudinaryUrls } = require('../_cloudinary');
+const { isAdminUser } = require('../_admin_access');
 
-const ADMIN_EMAIL = '20225216@hallym.ac.kr';
 const BATCH_SIZE = 450;
 
 async function deleteDocumentsInBatches(db, documents) {
@@ -49,7 +49,7 @@ module.exports = async (req, res) => {
   const itemDoc = await itemRef.get();
   if (!itemDoc.exists) return res.status(404).json({ error: 'item-not-found' });
   const item = itemDoc.data() || {};
-  const isAdmin = decoded.email === ADMIN_EMAIL && decoded.email_verified === true;
+  const isAdmin = isAdminUser(decoded);
   if (item.authorUid !== decoded.uid && !isAdmin) {
     return res.status(403).json({ error: 'not-author' });
   }

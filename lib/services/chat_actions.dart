@@ -2,6 +2,15 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 
 const int kMaxChatMessageLength = 2000;
 
+/// 새 채팅방의 로컬 대기 쓰기를 서버 확정된 문서로 오인해 메시지 쿼리를
+/// 너무 일찍 열지 않도록 한다. 부모 채팅 문서가 서버에 아직 없을 때 하위
+/// 컬렉션 쿼리를 시작하면 보안 규칙이 거부하고, 그 스트림은 재입장할 때까지
+/// 오류 상태에 머문다.
+bool shouldStartMessagesStream({
+  required bool chatExists,
+  required bool hasPendingWrites,
+}) => chatExists && !hasPendingWrites;
+
 /// 채팅 메시지 전송의 데이터 계층.
 ///
 /// UI(입력창 비우기·전송 중 표시)와 별개로, 같은 인스턴스에서 텍스트 전송이

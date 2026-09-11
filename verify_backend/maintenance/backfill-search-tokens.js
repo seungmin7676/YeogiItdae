@@ -1,12 +1,10 @@
 const { initAdmin, setCors, requireUser } = require('../_lib');
 const { buildSearchTokens } = require('../_search');
+const { isAdminUser } = require('../_admin_access');
 
 // 운영 데이터 백필이 완료된 일회성 도구다. Vercel Hobby의 Serverless Function
 // 12개 제한에 포함되지 않도록 api 밖에 보관하며, 필요하면 로컬 테스트 후
 // 임시 관리자 작업으로만 실행한다.
-
-// firestore.rules / lib/services/admin.dart 의 관리자 이메일과 반드시 일치시킨다.
-const ADMIN_EMAIL = '20225216@hallym.ac.kr';
 
 // 한 번 호출에서 처리할 문서 수. 서버리스 실행 시간 안에 끝나도록 나눠 돌리고,
 // 남은 게 있으면 응답의 done:false 를 보고 다시 호출하면 된다.
@@ -34,7 +32,7 @@ module.exports = async (req, res) => {
   const admin = initAdmin();
   const decoded = await requireUser(req, res);
   if (!decoded) return;
-  if (decoded.email !== ADMIN_EMAIL || decoded.email_verified !== true) {
+  if (!isAdminUser(decoded)) {
     return res.status(403).json({ error: 'admin-only' });
   }
 

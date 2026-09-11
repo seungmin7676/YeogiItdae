@@ -1,6 +1,6 @@
 // verify_backend의 이메일 인증/비밀번호 재설정/탈퇴 API 테스트.
 //
-// 실제 이메일 발송(nodemailer)은 목으로 대체하고, Firebase Auth/Firestore는
+// 실제 이메일 발송(_mailer 어댑터)은 목으로 대체하고, Firebase Auth/Firestore는
 // 로컬 에뮬레이터를 사용한다(실제 자격 증명이 전혀 필요 없다). `npm test`로
 // 실행한다.
 const { test, before, beforeEach } = require('node:test');
@@ -25,9 +25,9 @@ let admin;
 const sentEmails = [];
 
 before((t) => {
-  // send-code.js / send-reset-code.js가 require('nodemailer')를 하기 전에
+  // send-code.js / send-reset-code.js가 require('../_mailer')를 하기 전에
   // 먼저 목으로 바꿔치기해야 한다.
-  t.mock.module('nodemailer', {
+  t.mock.module('../_mailer.js', {
     exports: {
       createTransport: () => ({
         sendMail: async (options) => {

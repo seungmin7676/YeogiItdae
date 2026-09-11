@@ -10,7 +10,7 @@ const {
 const AUTH_EMULATOR_HOST = '127.0.0.1:9099';
 const FIRESTORE_EMULATOR_HOST = '127.0.0.1:8085';
 const PROJECT_ID = 'demo-yeogi-itdae';
-const ADMIN_EMAIL = '20225216@hallym.ac.kr';
+const ADMIN_EMAIL = 'admin1@hallym.ac.kr';
 
 process.env.FIREBASE_AUTH_EMULATOR_HOST = AUTH_EMULATOR_HOST;
 process.env.FIRESTORE_EMULATOR_HOST = FIRESTORE_EMULATOR_HOST;
