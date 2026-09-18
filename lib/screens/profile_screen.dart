@@ -23,6 +23,7 @@ import 'admin_bug_reports_screen.dart';
 import 'admin_reports_screen.dart';
 import 'blocked_users_screen.dart';
 import 'notification_settings_screen.dart';
+import 'onboarding_screen.dart';
 import 'privacy_policy_screen.dart';
 import 'saved_items_screen.dart';
 import 'saved_searches_screen.dart';
@@ -731,6 +732,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       },
                     ),
                     _ProfileMenuTile(
+                      key: const ValueKey('profile-tutorial-menu'),
+                      icon: Icons.school_outlined,
+                      label: '튜토리얼 다시 보기',
+                      onTap: () {
+                        final uid = user?.uid;
+                        if (uid == null) return;
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => OnboardingScreen(
+                              uid: uid,
+                              isReplay: true,
+                              onFinished: () => Navigator.of(context).pop(),
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                    _ProfileMenuTile(
                       icon: Icons.block_outlined,
                       label: '차단 관리',
                       onTap: () {
@@ -891,6 +911,7 @@ class _ProfileMenuTile extends StatelessWidget {
   final VoidCallback onTap;
 
   const _ProfileMenuTile({
+    super.key,
     required this.icon,
     required this.label,
     required this.onTap,

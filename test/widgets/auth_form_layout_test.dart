@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latte/screens/complete_profile_screen.dart';
 import 'package:latte/screens/password_reset_screen.dart';
+import 'package:latte/screens/signup_screen.dart';
 import 'package:latte/theme/app_theme.dart';
 
 Widget _app(Widget home, {double textScale = 1}) {
@@ -17,6 +18,22 @@ Widget _app(Widget home, {double textScale = 1}) {
 }
 
 void main() {
+  testWidgets('회원가입 폼은 별도 화면에서 작은 화면과 큰 글꼴에도 스크롤된다', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(320, 568));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(
+      _app(
+        const SignupScreen(initialEmail: '20261234@hallym.ac.kr'),
+        textScale: 2,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(ElevatedButton, '회원가입'), findsOneWidget);
+    await tester.ensureVisible(find.widgetWithText(ElevatedButton, '회원가입'));
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('비밀번호 재설정 폼은 넓은 화면에서도 최대 폭을 유지한다', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1200, 900));
     addTearDown(() => tester.binding.setSurfaceSize(null));

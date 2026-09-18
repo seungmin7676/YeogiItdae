@@ -1,8 +1,9 @@
 # 브랜드 자산 출처
 
-`assets/branding/hallym_logo.png`는 한림대학교 공식 UI 페이지가 제공하는
-심볼마크 원본(`A1.zip`, Basic System A-1-1)에서 심볼 경계만 잘라 사용합니다.
-형태와 색상은 변경하지 않았습니다.
+`assets/branding/hallym_logo.png`는 한림대학교 공식 UI 페이지와 제공 원본
+(`A1.zip`, Basic System A-1-1)의 심볼마크를 사용합니다. 앱의 유색 배경에서도
+자연스럽게 표시되도록 흰 배경만 투명 처리했으며 형태와 지정 색상은 변경하지
+않았습니다.
 
 - 공식 안내: [한림대학교 심볼마크](https://www.hallym.ac.kr/hallym/965/subview.do)
 - 공식 원본: [A1.zip](https://www.hallym.ac.kr/sites/hallym/files/A1.zip)
