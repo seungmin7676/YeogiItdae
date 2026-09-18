@@ -5,41 +5,77 @@ import '../theme/app_theme.dart';
 import '../widgets/hallym_logo.dart';
 
 class _OnboardingPage {
+  final String eyebrow;
   final String title;
   final String description;
+  final String badge;
+  final IconData icon;
+  final Color accent;
+  final List<String> tags;
 
-  const _OnboardingPage({required this.title, required this.description});
+  const _OnboardingPage({
+    required this.eyebrow,
+    required this.title,
+    required this.description,
+    required this.badge,
+    required this.icon,
+    required this.accent,
+    required this.tags,
+  });
 }
 
 const List<_OnboardingPage> _kOnboardingPages = [
   _OnboardingPage(
-    title: '여기있대!에\n오신 것을 환영해요',
-    description: '한림대학교 캠퍼스에서 잃어버린 물건과 주운 물건을\n빠르게 찾고 전달할 수 있는 앱이에요.',
+    eyebrow: 'WELCOME',
+    title: '캠퍼스의 잃어버린 물건을\n더 빠르게 찾아보세요',
+    description: '한림대학교 구성원이 함께 분실물과 습득물을\n찾고 전달하는 안전한 캠퍼스 커뮤니티예요.',
+    badge: '한림대학교 분실물 커뮤니티',
+    icon: Icons.location_searching_rounded,
+    accent: AppColors.primary,
+    tags: ['교내 전용', '빠른 검색'],
   ),
   _OnboardingPage(
-    title: '분실물·습득물을\n둘러보세요',
-    description: '홈 화면에서 카테고리와 검색으로\n원하는 물건을 빠르게 찾을 수 있어요.',
+    eyebrow: 'FIND',
+    title: '검색과 필터로\n원하는 물건만 한눈에',
+    description: '습득물·분실물 종류와 카테고리, 장소를 골라\n필요한 게시글을 빠르게 확인할 수 있어요.',
+    badge: '찾고 싶은 조건만 선택',
+    icon: Icons.search_rounded,
+    accent: AppColors.primary,
+    tags: ['전자기기', '지갑·카드', '가방'],
   ),
   _OnboardingPage(
-    title: '물건을 등록하고\n주인을 찾아주세요',
-    description: '사진과 함께 등록하면 주인을 찾거나\n분실물을 되찾을 확률이 높아져요.',
+    eyebrow: 'SHARE',
+    title: '사진과 위치를 더해\n발견 가능성을 높여보세요',
+    description: '물건의 특징과 발견 장소를 간단히 등록하면\n주인을 찾거나 내 물건을 되찾기 쉬워져요.',
+    badge: '몇 번의 터치로 간편 등록',
+    icon: Icons.add_a_photo_outlined,
+    accent: AppColors.found,
+    tags: ['사진 첨부', '장소 선택'],
   ),
   _OnboardingPage(
-    title: '채팅으로\n안전하게 연락하세요',
-    description: '게시글 작성자와 실시간으로 채팅할 수 있고,\n필요하면 언제든 차단할 수 있어요.',
+    eyebrow: 'CONNECT',
+    title: '안전한 1:1 채팅으로\n전달 방법을 정하세요',
+    description: '게시글 작성자와 바로 대화하고 약속을 정해보세요.\n불편한 사용자는 언제든 차단할 수 있어요.',
+    badge: '필요한 정보만 안전하게',
+    icon: Icons.chat_bubble_outline_rounded,
+    accent: AppColors.primary,
+    tags: ['실시간 채팅', '사용자 차단'],
   ),
 ];
 
-/// 화면: 앱 최초 실행 시 한 번만 보여주는 사용법 튜토리얼.
-/// 대각선 컬러 블록 + 좌측 정렬 타이포 + 얇은 진행바 스타일.
+/// 앱 최초 실행 시 한 번 보여주는 사용법 안내.
+/// 앱의 잉크 에디토리얼 디자인과 같은 흰 캔버스, 회백색 정보 면,
+/// 알약 버튼과 제한적인 포인트 컬러를 사용한다.
 class OnboardingScreen extends StatefulWidget {
   final VoidCallback onFinished;
   final String uid;
+  final bool isReplay;
 
   const OnboardingScreen({
     super.key,
     required this.uid,
     required this.onFinished,
+    this.isReplay = false,
   });
 
   @override
@@ -49,10 +85,6 @@ class OnboardingScreen extends StatefulWidget {
 class _OnboardingScreenState extends State<OnboardingScreen> {
   final _controller = PageController();
   int _index = 0;
-
-  /// 기본값은 "다시 보지 않기". 사용법 튜토리얼은 한 번 보면 충분한데,
-  /// 기본이 꺼짐이면 체크를 놓친 대부분의 사용자가 로그인할 때마다 같은
-  /// 화면을 네 장씩 다시 넘겨야 했다. 다시 보고 싶은 사람만 해제하면 된다.
   bool _dontShowAgain = true;
 
   @override
@@ -61,10 +93,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     super.dispose();
   }
 
-  Color get _accent => _index.isEven ? AppColors.primary : AppColors.accent;
-
   Future<void> _finish() async {
-    if (_dontShowAgain) {
+    if (!widget.isReplay && _dontShowAgain) {
       await markOnboardingSeen(widget.uid);
     }
     if (!mounted) return;
@@ -76,10 +106,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       _finish();
       return;
     }
-    _controller.nextPage(
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeOut,
-    );
+    _controller.nextPage(duration: kMotionStandard, curve: Curves.easeOutCubic);
   }
 
   @override
@@ -87,218 +114,368 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     final isLast = _index == _kOnboardingPages.length - 1;
     return Scaffold(
       backgroundColor: AppColors.surface,
-      body: Stack(
-        children: [
-          // 대각선 컬러 블록 (좌상단)
-          Positioned(
-            top: 0,
-            left: 0,
-            child: ClipPath(
-              clipper: _DiagonalClipper(),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 250),
-                width: 220,
-                height: 220,
-                color: _accent,
-              ),
-            ),
-          ),
-          SafeArea(
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 8, 16, 0),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      body: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 8, 12, 4),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final textScale = MediaQuery.textScalerOf(context).scale(1);
+                  final compactHeader =
+                      constraints.maxWidth < 360 && textScale > 1.4;
+                  return Row(
                     children: [
-                      const HallymLogo(size: 28),
-                      TextButton(
-                        onPressed: _finish,
-                        child: const Text(
-                          '건너뛰기',
+                      const HallymLogo(size: 24),
+                      if (!compactHeader) ...[
+                        const SizedBox(width: 10),
+                        const Text(
+                          '여기있대!',
                           style: TextStyle(
-                            color: AppColors.inkMuted,
-                            fontWeight: FontWeight.w700,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                            color: AppColors.ink,
+                            letterSpacing: -0.4,
+                          ),
+                        ),
+                      ],
+                      const Spacer(),
+                      TextButton(
+                        key: const ValueKey('onboarding-close-button'),
+                        onPressed: _finish,
+                        style: TextButton.styleFrom(
+                          foregroundColor: AppColors.inkMuted,
+                          backgroundColor: AppColors.surfaceAlt,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 8,
+                          ),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          shape: const StadiumBorder(),
+                        ),
+                        child: Text(
+                          widget.isReplay ? '닫기' : '건너뛰기',
+                          style: const TextStyle(
                             fontSize: 12.5,
+                            fontWeight: FontWeight.w700,
                           ),
                         ),
                       ),
                     ],
-                  ),
+                  );
+                },
+              ),
+            ),
+            Expanded(
+              child: PageView.builder(
+                controller: _controller,
+                itemCount: _kOnboardingPages.length,
+                onPageChanged: (index) => setState(() => _index = index),
+                itemBuilder: (context, index) => _OnboardingPageView(
+                  page: _kOnboardingPages[index],
+                  index: index,
                 ),
-                Expanded(
-                  child: PageView.builder(
-                    controller: _controller,
-                    itemCount: _kOnboardingPages.length,
-                    onPageChanged: (index) => setState(() => _index = index),
-                    itemBuilder: (context, index) {
-                      final page = _kOnboardingPages[index];
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 28),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(
-                              '0${index + 1} — 0${_kOnboardingPages.length}',
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: 3,
-                                color: _accent,
-                              ),
-                            ),
-                            const SizedBox(height: 16),
-                            Text(
-                              page.title,
-                              style: const TextStyle(
-                                fontSize: 27,
-                                fontWeight: FontWeight.w800,
-                                height: 1.38,
-                                color: AppColors.ink,
-                                letterSpacing: -0.5,
-                              ),
-                            ),
-                            const SizedBox(height: 18),
-                            Container(
-                              width: 36,
-                              height: 4,
-                              decoration: BoxDecoration(
-                                color: _accent,
-                                borderRadius: BorderRadius.circular(2),
-                              ),
-                            ),
-                            const SizedBox(height: 18),
-                            Text(
-                              page.description,
-                              style: const TextStyle(
-                                fontSize: 14,
-                                height: 1.75,
-                                color: AppColors.inkMuted,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  // 탭 처리는 바깥 InkWell이 맡고 Checkbox는 표시용이므로,
-                  // 스크린 리더에는 이 영역 전체를 하나의 체크박스로 알린다.
-                  child: Semantics(
-                    checked: _dontShowAgain,
-                    label: '다음부터 보지 않기',
-                    child: InkWell(
-                      onTap: () =>
-                          setState(() => _dontShowAgain = !_dontShowAgain),
-                      borderRadius: BorderRadius.circular(8),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 4,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            ExcludeSemantics(
-                              child: IgnorePointer(
-                                child: Checkbox(
-                                  value: _dontShowAgain,
-                                  activeColor: AppColors.primary,
-                                  visualDensity: VisualDensity.compact,
-                                  materialTapTargetSize:
-                                      MaterialTapTargetSize.shrinkWrap,
-                                  onChanged: (_) {},
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 4),
-                            const Text(
-                              '다음부터 보지 않기',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: AppColors.inkMuted,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ],
+              ),
+            ),
+            Container(
+              decoration: const BoxDecoration(
+                color: AppColors.surface,
+                border: Border(top: BorderSide(color: AppColors.line)),
+              ),
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 18),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: List.generate(
+                      _kOnboardingPages.length,
+                      (index) => AnimatedContainer(
+                        key: ValueKey('onboarding-indicator-$index'),
+                        duration: kMotionFast,
+                        width: index == _index ? 24 : 7,
+                        height: 7,
+                        margin: const EdgeInsets.symmetric(horizontal: 3),
+                        decoration: BoxDecoration(
+                          color: index == _index
+                              ? AppColors.primary
+                              : AppColors.lineStrong,
+                          borderRadius: BorderRadius.circular(kRadiusPill),
                         ),
                       ),
                     ),
                   ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(28, 0, 28, 28),
-                  child: Column(
-                    children: [
-                      // 얇은 진행바
-                      Stack(
-                        children: [
-                          Container(
-                            height: 2,
-                            decoration: BoxDecoration(
-                              color: AppColors.line,
-                              borderRadius: BorderRadius.circular(1),
-                            ),
+                  if (!widget.isReplay) ...[
+                    const SizedBox(height: 10),
+                    Semantics(
+                      checked: _dontShowAgain,
+                      label: '다음부터 보지 않기',
+                      child: InkWell(
+                        onTap: () =>
+                            setState(() => _dontShowAgain = !_dontShowAgain),
+                        borderRadius: BorderRadius.circular(kRadiusMd),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 2,
                           ),
-                          // 진행 길이는 화면 폭에서 어림잡지 않고 트랙 폭을
-                          // 기준으로 잡는다. 예전에는 화면 폭의 86%로 계산해
-                          // 좁은 기기에서 마지막 장의 막대가 트랙 밖으로
-                          // 삐져나가 잘렸다.
-                          FractionallySizedBox(
-                            alignment: Alignment.centerLeft,
-                            widthFactor:
-                                (_index + 1) / _kOnboardingPages.length,
-                            child: AnimatedContainer(
-                              duration: const Duration(milliseconds: 250),
-                              height: 2,
-                              decoration: BoxDecoration(
-                                color: _accent,
-                                borderRadius: BorderRadius.circular(1),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              ExcludeSemantics(
+                                child: IgnorePointer(
+                                  child: Checkbox(
+                                    value: _dontShowAgain,
+                                    activeColor: AppColors.primary,
+                                    visualDensity: VisualDensity.compact,
+                                    materialTapTargetSize:
+                                        MaterialTapTargetSize.shrinkWrap,
+                                    onChanged: (_) {},
+                                  ),
+                                ),
                               ),
-                            ),
+                              const SizedBox(width: 2),
+                              const Flexible(
+                                child: Text(
+                                  '다음부터 보지 않기',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    color: AppColors.inkMuted,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 8),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      key: const ValueKey('onboarding-next-button'),
+                      onPressed: _next,
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            isLast
+                                ? widget.isReplay
+                                      ? '튜토리얼 닫기'
+                                      : '여기있대! 시작하기'
+                                : '다음',
+                          ),
+                          const SizedBox(width: 8),
+                          Icon(
+                            isLast
+                                ? Icons.check_rounded
+                                : Icons.arrow_forward_rounded,
+                            size: 19,
                           ),
                         ],
                       ),
-                      const SizedBox(height: 22),
-                      InkWell(
-                        onTap: _next,
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            Text(
-                              isLast ? '시작하기' : '다음',
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w800,
-                                color: AppColors.ink,
-                              ),
-                            ),
-                            Container(
-                              width: 44,
-                              height: 44,
-                              decoration: BoxDecoration(
-                                color: _accent,
-                                shape: BoxShape.circle,
-                              ),
-                              child: const Icon(
-                                Icons.arrow_forward_rounded,
-                                color: Colors.white,
-                                size: 20,
-                              ),
-                            ),
-                          ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OnboardingPageView extends StatelessWidget {
+  final _OnboardingPage page;
+  final int index;
+
+  const _OnboardingPageView({required this.page, required this.index});
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const verticalPadding = 20.0;
+        final minimumHeight = constraints.maxHeight > verticalPadding * 2
+            ? constraints.maxHeight - verticalPadding * 2
+            : 0.0;
+        return SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(
+            horizontal: kPagePadding,
+            vertical: verticalPadding,
+          ),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: minimumHeight),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: kFormMaxWidth),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _FeaturePreview(page: page, index: index),
+                    const SizedBox(height: 28),
+                    Text(
+                      page.eyebrow,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: page.accent,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 2.2,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      page.title,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 27,
+                        fontWeight: FontWeight.w800,
+                        height: 1.32,
+                        color: AppColors.ink,
+                        letterSpacing: -0.6,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Text(
+                      page.description,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 14.5,
+                        height: 1.65,
+                        color: AppColors.inkMuted,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _FeaturePreview extends StatelessWidget {
+  final _OnboardingPage page;
+  final int index;
+
+  const _FeaturePreview({required this.page, required this.index});
+
+  @override
+  Widget build(BuildContext context) {
+    final scaledCaption = MediaQuery.textScalerOf(context).scale(12);
+    final previewHeight = (190 + (scaledCaption - 12) * 4).clamp(190.0, 270.0);
+    return Container(
+      height: previewHeight,
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: AppColors.surfaceAlt,
+        borderRadius: BorderRadius.circular(kRadiusXl),
+      ),
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Positioned(
+            top: 20,
+            left: 22,
+            child: Text(
+              '0${index + 1}',
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+                color: page.accent,
+                letterSpacing: 1.4,
+              ),
+            ),
+          ),
+          Center(
+            child: Container(
+              width: 94,
+              height: 94,
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                shape: BoxShape.circle,
+                border: Border.all(color: AppColors.line),
+              ),
+              child: Icon(page.icon, size: 42, color: page.accent),
+            ),
+          ),
+          Positioned(
+            top: 18,
+            left: 54,
+            right: 18,
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.surface,
+                  borderRadius: BorderRadius.circular(kRadiusPill),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.check_circle_rounded,
+                      size: 14,
+                      color: page.accent,
+                    ),
+                    const SizedBox(width: 5),
+                    Flexible(
+                      child: Text(
+                        page.badge,
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          color: AppColors.inkMuted,
+                          fontWeight: FontWeight.w700,
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
+              ),
+            ),
+          ),
+          Positioned(
+            left: 18,
+            right: 18,
+            bottom: 16,
+            child: Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 7,
+              runSpacing: 6,
+              children: [
+                for (final tag in page.tags)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 11,
+                      vertical: 7,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(kRadiusPill),
+                    ),
+                    child: Text(
+                      tag,
+                      style: const TextStyle(
+                        fontSize: 11.5,
+                        color: AppColors.ink,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
@@ -306,19 +483,4 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       ),
     );
   }
-}
-
-class _DiagonalClipper extends CustomClipper<Path> {
-  @override
-  Path getClip(Size size) {
-    final path = Path();
-    path.lineTo(0, 0);
-    path.lineTo(size.width, 0);
-    path.lineTo(0, size.height);
-    path.close();
-    return path;
-  }
-
-  @override
-  bool shouldReclip(CustomClipper<Path> oldClipper) => false;
 }

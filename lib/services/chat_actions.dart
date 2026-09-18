@@ -11,6 +11,13 @@ bool shouldStartMessagesStream({
   required bool hasPendingWrites,
 }) => chatExists && !hasPendingWrites;
 
+/// 차단 관계의 메시지는 Firestore 규칙에서 permission-denied로 거부된다.
+/// 차단 여부를 발신자에게 노출하지 않기 위해 이 경우에만 서버 오류 대신
+/// 발신자 기기의 로컬 말풍선으로 남긴다. 네트워크·인증 등 다른 실패까지
+/// 숨기면 실제 장애를 알아차릴 수 없으므로 구분한다.
+bool shouldKeepAsLocalChatEcho(Object error) =>
+    error is FirebaseException && error.code == 'permission-denied';
+
 /// 채팅 메시지 전송의 데이터 계층.
 ///
 /// UI(입력창 비우기·전송 중 표시)와 별개로, 같은 인스턴스에서 텍스트 전송이

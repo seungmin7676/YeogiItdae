@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latte/screens/login_screen.dart';
+import 'package:latte/screens/signup_screen.dart';
 import 'package:latte/theme/app_theme.dart';
 
 Widget _app({double textScale = 1}) {
@@ -16,6 +17,33 @@ Widget _app({double textScale = 1}) {
 }
 
 void main() {
+  testWidgets('로그인 폼은 화면 높이의 가운데에 배치된다', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(_app());
+    await tester.pumpAndSettle();
+
+    final formCenter = tester.getRect(find.byType(Form)).center.dy;
+    expect(formCenter, closeTo(844 / 2, 1));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('회원가입을 선택하면 별도 화면으로 이동한다', (tester) async {
+    await tester.pumpWidget(_app());
+    await tester.enterText(find.byType(TextFormField).first, '20261234');
+
+    await tester.tap(find.text('계정이 없으신가요? 회원가입'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(SignupScreen), findsOneWidget);
+    expect(find.widgetWithText(AppBar, '회원가입'), findsOneWidget);
+    final signupEmailField = tester.widget<TextFormField>(
+      find.byType(TextFormField).first,
+    );
+    expect(signupEmailField.controller?.text, '20261234');
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('넓은 화면에서 로그인 폼이 읽기 좋은 폭을 유지한다', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1200, 900));
     addTearDown(() => tester.binding.setSurfaceSize(null));

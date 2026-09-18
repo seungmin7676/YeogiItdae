@@ -1,8 +1,30 @@
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latte/services/chat_actions.dart';
 
 void main() {
+  group('shouldKeepAsLocalChatEcho', () {
+    test('차단 규칙의 권한 오류만 로컬 말풍선으로 처리한다', () {
+      expect(
+        shouldKeepAsLocalChatEcho(
+          FirebaseException(
+            plugin: 'cloud_firestore',
+            code: 'permission-denied',
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        shouldKeepAsLocalChatEcho(
+          FirebaseException(plugin: 'cloud_firestore', code: 'unavailable'),
+        ),
+        isFalse,
+      );
+      expect(shouldKeepAsLocalChatEcho(StateError('network')), isFalse);
+    });
+  });
+
   group('shouldStartMessagesStream', () {
     test('서버에 확정된 채팅방에서만 메시지 스트림을 시작한다', () {
       expect(
