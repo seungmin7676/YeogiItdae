@@ -17,6 +17,7 @@ import '../widgets/app_ui.dart';
 import '../widgets/confirm_dialog.dart';
 import '../widgets/image_source_sheet.dart';
 import '../widgets/searchable_picker_sheet.dart';
+import '../widgets/safety_notice.dart';
 
 /// 화면 B: 분실물/습득물 등록 폼 (editingItem이 있으면 수정 모드)
 class RegisterItemScreen extends StatefulWidget {
@@ -265,7 +266,7 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
         // (keyword_notifier.dart 참고 — 예전에는 클라이언트가 남의
         // savedSearches를 전부 읽어야 했다). 실패해도 글은 이미 등록됐으므로
         // 결과를 기다리지 않는다.
-        unawaited(notifyKeywordMatches(itemId: ref.id));
+        await notifyKeywordMatches(itemId: ref.id);
       }
       if (mounted) {
         Navigator.pop(context);
@@ -359,6 +360,8 @@ class _RegisterItemScreenState extends State<RegisterItemScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  const SafetyNotice(text: photoPrivacyNotice),
+                  const SizedBox(height: 16),
                   SectionLabel('사진 $_totalImageCount/$_maxImages'),
                   const SizedBox(height: 10),
                   SizedBox(

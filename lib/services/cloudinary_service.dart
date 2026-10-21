@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:http/http.dart' as http;
@@ -5,6 +6,28 @@ import 'package:image_picker/image_picker.dart';
 
 import 'backend_exception.dart';
 import 'backend_http.dart';
+
+const kImageUploadTimeout = Duration(seconds: 45);
+
+/// 헤더 대기뿐 아니라 응답 본문 읽기에도 같은 제한을 적용한다.
+/// 전용 client를 닫아 시간 초과된 업로드가 뒤에서 계속 진행되지 않게 한다.
+Future<http.Response> sendImageRequest(
+  http.BaseRequest request, {
+  http.Client? client,
+  Duration timeout = kImageUploadTimeout,
+}) async {
+  final uploadClient = client ?? http.Client();
+  try {
+    return await (() async {
+      final streamed = await uploadClient.send(request);
+      return http.Response.fromStream(streamed);
+    })().timeout(timeout);
+  } on TimeoutException {
+    throw const BackendRequestTimeoutException();
+  } finally {
+    uploadClient.close();
+  }
+}
 
 /// 로그인한 사용자만 업로드할 수 있도록, cloud name/preset을 클라이언트에
 /// 고정해두지 않고 매번 백엔드(verify_backend)에서 서명을 발급받아 함께
@@ -17,7 +40,9 @@ import 'backend_http.dart';
 Future<String> uploadImageToCloudinary(XFile file) async {
   final signResponse = await postBackend(
     Uri.parse('$kVerifyBackendUrl/api/cloudinary-signature'),
-    headers: await backendSecurityHeaders(authenticate: true),
+    headers: await backendSecurityHeaders(
+      authenticate: true,
+    ).timeout(const Duration(seconds: 10)),
   );
   final signDecoded = signResponse.body.isEmpty
       ? <String, dynamic>{}
@@ -43,8 +68,7 @@ Future<String> uploadImageToCloudinary(XFile file) async {
       http.MultipartFile.fromBytes('file', bytes, filename: file.name),
     );
 
-  final streamedResponse = await request.send();
-  final response = await http.Response.fromStream(streamedResponse);
+  final response = await sendImageRequest(request);
 
   if (response.statusCode >= 400) {
     throw Exception('이미지 업로드에 실패했습니다 (${response.statusCode})');

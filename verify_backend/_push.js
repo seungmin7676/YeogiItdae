@@ -20,7 +20,7 @@ const TYPE_TO_SETTING = {
  */
 async function sendPushToUser(
   admin,
-  { recipientUid, senderUid, type, title, body, data },
+  { recipientUid, senderUid, type, title, body, data, deliveryKey },
 ) {
   const db = admin.firestore();
 
@@ -44,9 +44,16 @@ async function sendPushToUser(
 
   // 수신자의 기기 토큰들.
   const tokenDoc = await db.collection('fcmTokens').doc(recipientUid).get();
-  const tokens = (tokenDoc.exists && tokenDoc.data().tokens) || [];
+  let tokens = (tokenDoc.exists && tokenDoc.data().tokens) || [];
   if (!Array.isArray(tokens) || tokens.length === 0) {
     return { skipped: 'no-tokens' };
+  }
+  const deliveryRef = deliveryKey ? db.collection('pushDeliveries').doc(deliveryKey) : null;
+  if (deliveryRef) {
+    const delivery = await deliveryRef.get();
+    const delivered = delivery.data()?.deliveredTokens || [];
+    tokens = tokens.filter((token) => !delivered.includes(token));
+    if (tokens.length === 0) return { sent: 0, failed: 0 };
   }
 
   // FCM data 페이로드는 모든 값이 문자열이어야 한다.
@@ -70,7 +77,10 @@ async function sendPushToUser(
 
   // 더 이상 유효하지 않은 토큰은 정리해, 다음 발송부터 빼둔다.
   const staleTokens = [];
+  const successfulTokens = [];
+  let retryable = 0;
   response.responses.forEach((r, i) => {
+    if (r.success) successfulTokens.push(tokens[i]);
     if (
       !r.success &&
       r.error &&
@@ -79,8 +89,16 @@ async function sendPushToUser(
         r.error.code === 'messaging/invalid-argument')
     ) {
       staleTokens.push(tokens[i]);
+    } else if (!r.success) {
+      retryable += 1;
     }
   });
+  if (deliveryRef && successfulTokens.length) {
+    await deliveryRef.set({
+      deliveredTokens: admin.firestore.FieldValue.arrayUnion(...successfulTokens),
+      expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    }, { merge: true });
+  }
   if (staleTokens.length > 0) {
     await db
       .collection('fcmTokens')
@@ -91,7 +109,7 @@ async function sendPushToUser(
       );
   }
 
-  return { sent: response.successCount, failed: response.failureCount };
+  return { sent: response.successCount, failed: retryable, retryable: retryable > 0 };
 }
 
 module.exports = { sendPushToUser, TYPE_TO_SETTING };

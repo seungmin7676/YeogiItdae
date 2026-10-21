@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../services/error_messages.dart';
+import '../services/push_notifications.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/app_user_data.dart';
@@ -90,6 +91,17 @@ class NotificationSettingsScreen extends StatelessWidget {
           return ListView(
             padding: const EdgeInsets.all(kPagePadding),
             children: [
+              ValueListenableBuilder<String>(
+                valueListenable: PushNotifications.deviceStatus,
+                builder: (context, status, _) => ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('이 기기의 푸시 알림'),
+                  subtitle: Text(status),
+                  onTap: PushNotifications.enableForCurrentUser,
+                  trailing: const Icon(Icons.refresh_rounded),
+                ),
+              ),
+              const SizedBox(height: 16),
               GroupSurface(
                 children: [
                   for (final option in _kNotificationTypes)

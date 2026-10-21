@@ -55,7 +55,7 @@ Query<Map<String, dynamic>> buildFeedQuery({
   required String category,
   required String location,
   required bool sortByPopular,
-  required int limit,
+  required int? limit,
   String? searchToken,
 }) {
   // Firestore 규칙도 같은 조건을 요구한다. 관리자에게 숨김 처리된 글이
@@ -77,9 +77,11 @@ Query<Map<String, dynamic>> buildFeedQuery({
       query = query.where('location', isEqualTo: location);
     }
   }
-  return query
-      .orderBy(sortByPopular ? 'viewCount' : 'createdAt', descending: true)
-      .limit(limit);
+  query = query.orderBy(
+    sortByPopular ? 'viewCount' : 'createdAt',
+    descending: true,
+  );
+  return limit == null ? query : query.limit(limit);
 }
 
 /// 카테고리 칩에 붙는 개수를 셀 때 쓰는 쿼리(정렬·limit 없음).

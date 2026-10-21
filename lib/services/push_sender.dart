@@ -1,8 +1,4 @@
-import 'dart:convert';
-
-import 'package:firebase_auth/firebase_auth.dart';
-import 'backend_exception.dart';
-import 'backend_http.dart';
+import 'notification_outbox.dart';
 
 /// 이벤트를 일으킨 클라이언트가 호출해 수신자에게 푸시를 보내도록 백엔드에
 /// 요청한다. 실제 발송·필터링(차단·알림설정)·죽은 토큰 정리는 Vercel
@@ -20,21 +16,11 @@ Future<void> sendPush({
   required String body,
   Map<String, dynamic> data = const {},
 }) async {
-  try {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    await postBackend(
-      Uri.parse('$kVerifyBackendUrl/api/send-push'),
-      headers: await backendSecurityHeaders(authenticate: true),
-      body: jsonEncode({
-        'recipientUid': ?recipientUid,
-        'type': type,
-        'title': title,
-        'body': body,
-        'data': data,
-      }),
-    );
-  } catch (_) {
-    // 푸시 발송 실패는 조용히 넘어간다.
-  }
+  await NotificationDelivery.instance.enqueue('send-push', {
+    'recipientUid': ?recipientUid,
+    'type': type,
+    'title': title,
+    'body': body,
+    'data': data,
+  });
 }

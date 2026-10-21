@@ -6,6 +6,7 @@ Widget _app({
   double textScale = 1,
   bool isReplay = false,
   VoidCallback? onFinished,
+  Future<void> Function(String)? saveSeen,
 }) {
   return MaterialApp(
     builder: (context, child) => MediaQuery(
@@ -18,11 +19,42 @@ Widget _app({
       uid: 'test-user',
       isReplay: isReplay,
       onFinished: onFinished ?? () {},
+      saveSeen: saveSeen,
     ),
   );
 }
 
 void main() {
+  testWidgets('튜토리얼 확인 저장이 실패해도 홈으로 진입한다', (tester) async {
+    var finished = false;
+    await tester.pumpWidget(
+      _app(
+        onFinished: () => finished = true,
+        saveSeen: (_) async => throw StateError('offline'),
+      ),
+    );
+    await tester.tap(find.byKey(const ValueKey('onboarding-close-button')));
+    await tester.pump();
+    expect(finished, isTrue);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('튜토리얼 확인 저장 응답이 없어도 3초 뒤 홈으로 진입한다', (tester) async {
+    var finished = 0;
+    await tester.pumpWidget(
+      _app(
+        onFinished: () => finished++,
+        saveSeen: (_) => Future<void>.delayed(const Duration(days: 1)),
+      ),
+    );
+    await tester.tap(find.byKey(const ValueKey('onboarding-close-button')));
+    await tester.tap(find.byKey(const ValueKey('onboarding-close-button')));
+    await tester.pump(const Duration(seconds: 3));
+    expect(finished, 1);
+    await tester.pump(const Duration(days: 1));
+    expect(finished, 1);
+    expect(tester.takeException(), isNull);
+  });
   testWidgets('다음 버튼으로 독립된 기능 안내 페이지를 넘긴다', (tester) async {
     await tester.pumpWidget(_app());
     expect(find.text('WELCOME'), findsOneWidget);

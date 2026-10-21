@@ -4,6 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import '../widgets/safety_notice.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../models/lost_found_item.dart';
@@ -459,6 +460,8 @@ class _ItemDetailSheetState extends State<ItemDetailSheet> {
                         ),
                       ),
                     ],
+                    const SizedBox(height: 20),
+                    const SafetyNotice(text: handoverSafetyNotice),
                     const SizedBox(height: 20),
                     const Divider(),
                     const SizedBox(height: 16),

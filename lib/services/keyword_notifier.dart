@@ -1,8 +1,4 @@
-import 'dart:convert';
-
-import 'package:firebase_auth/firebase_auth.dart';
-import 'backend_exception.dart';
-import 'backend_http.dart';
+import 'notification_outbox.dart';
 
 /// 새 글이 등록됐으니 키워드·카테고리 구독자에게 알림을 보내달라고 백엔드에
 /// 요청한다.
@@ -19,15 +15,7 @@ import 'backend_http.dart';
 /// 알림 발송 실패는 글 등록 자체를 되돌릴 만한 일이 아니므로 조용히 삼킨다
 /// (호출한 쪽은 결과를 기다리지 않아도 된다).
 Future<void> notifyKeywordMatches({required String itemId}) async {
-  try {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    await postBackend(
-      Uri.parse('$kVerifyBackendUrl/api/notify-matches'),
-      headers: await backendSecurityHeaders(authenticate: true),
-      body: jsonEncode({'itemId': itemId}),
-    );
-  } catch (_) {
-    // 구독 알림이 안 나가도 글은 정상 등록된 상태다.
-  }
+  await NotificationDelivery.instance.enqueue('notify-matches', {
+    'itemId': itemId,
+  });
 }

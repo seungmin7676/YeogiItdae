@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/error_messages.dart';
+import '../services/feed_search.dart';
 import '../services/item_queries.dart';
 import '../services/recent_search_service.dart';
 import '../services/search_tokens.dart';
@@ -46,10 +47,18 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
 
   int _limit = kInitialPageLimit;
   bool _isLoadingMore = false;
+  FeedSearchPager? _searchPager;
+  Future<List<LostFoundItem>>? _searchFuture;
 
   /// 필터·정렬이 바뀌면 이전 필터 기준으로 늘려둔 개수를 그대로 쓰면 안 되므로
   /// 처음 개수로 되돌린다.
-  void _resetPaging() => _limit = kInitialPageLimit;
+  void _resetPaging() {
+    _searchPager?.cancel();
+    _limit = kInitialPageLimit;
+    _isLoadingMore = false;
+    _searchPager = null;
+    _searchFuture = null;
+  }
 
   // 카테고리 칩의 숫자는 전체 목록을 다시 구독해서 세지 않고 count() 집계
   // 쿼리로 서버에서 직접 센다. 실시간은 아니지만(집계 쿼리는 스냅샷 구독을
@@ -93,6 +102,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
 
   @override
   void dispose() {
+    _searchPager?.cancel();
     _searchDebounce?.cancel();
     _searchController.dispose();
     _searchFocusNode.dispose();
@@ -106,7 +116,12 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
     setState(() {});
     _searchDebounce?.cancel();
     _searchDebounce = Timer(const Duration(milliseconds: 300), () {
-      if (mounted) setState(() => _searchQuery = value);
+      if (mounted) {
+        setState(() {
+          _searchQuery = value;
+          _resetPaging();
+        });
+      }
     });
   }
 
@@ -125,7 +140,10 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
     // 나중에 덮어쓸 수 있으니 먼저 취소한다.
     _searchDebounce?.cancel();
     _searchController.text = query;
-    setState(() => _searchQuery = query);
+    setState(() {
+      _searchQuery = query;
+      _resetPaging();
+    });
     _searchFocusNode.unfocus();
   }
 
@@ -171,14 +189,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
     }).toList();
   }
 
-  /// 검색어가 두 글자 이상이면 서버에서 2-gram 토큰으로 후보를 좁힌다.
-  /// 한 글자면 후보를 좁히는 의미가 없어(거의 모든 글에 걸린다) 토큰 없이
-  /// 불러온 목록 안에서만 거른다.
-  String? get _searchToken => searchTokenFor(_searchQuery.trim());
-
-  // 검색 중이라도 항상 페이지네이션 limit을 적용한다. 예전에는 검색어가
-  // 있으면 limit을 아예 없애 전체 컬렉션을 매번 구독했는데, 게시글이
-  // 늘어날수록 검색할 때마다 읽기 비용이 무한정 커지는 문제가 있었다.
+  // 검색은 별도의 커서 페이지를 사용해 예전 검색 토큰의 누락도 보완한다.
   Query<Map<String, dynamic>> get _filteredQuery => buildFeedQuery(
     collection: itemsCollection,
     typeFilter: _selectedFilter,
@@ -186,8 +197,71 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
     location: _selectedLocation,
     sortByPopular: _sortByPopular,
     limit: _limit,
-    searchToken: _searchToken,
   );
+
+  Widget _buildSearchResults(Set<String> blockedUids) {
+    _searchPager ??= FeedSearchPager(
+      query: buildFeedQuery(
+        collection: itemsCollection,
+        typeFilter: _selectedFilter,
+        category: _selectedCategory,
+        location: _selectedLocation,
+        sortByPopular: _sortByPopular,
+        limit: null,
+      ),
+      search: _searchQuery,
+    );
+    _searchFuture ??= _searchPager!.loadNext();
+    final pager = _searchPager!;
+    return FutureBuilder<List<LostFoundItem>>(
+      future: _searchFuture,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return FeedMessage(
+            icon: Icons.error_outline_rounded,
+            title: '검색을 마치지 못했어요',
+            text: '연결을 확인하고 다시 시도해주세요.',
+            actionLabel: '다시 시도',
+            onAction: () => setState(() {
+              _searchFuture = pager.loadNext();
+            }),
+          );
+        }
+        if (!snapshot.hasData) return const ItemListSkeleton();
+        final items = _applySearch(snapshot.data!, blockedUids);
+        final loading = snapshot.connectionState == ConnectionState.waiting;
+        if (items.isEmpty && !pager.hasMore) {
+          return FeedMessage(
+            icon: Icons.search_off_rounded,
+            title: '검색 결과가 없어요',
+            text: '다른 검색어나 필터로 다시 찾아보세요.',
+            actionLabel: '필터 해제',
+            onAction: _clearFilters,
+          );
+        }
+        return RefreshIndicator(
+          onRefresh: _refresh,
+          child: ListView.separated(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.only(bottom: 100),
+            itemCount: items.length + (pager.hasMore || loading ? 1 : 0),
+            separatorBuilder: (_, index) => const Divider(),
+            itemBuilder: (context, index) {
+              if (index == items.length) {
+                return LoadMoreButton(
+                  isLoading: loading,
+                  onPressed: () =>
+                      setState(() => _searchFuture = pager.loadNext()),
+                );
+              }
+              final item = items[index];
+              return ItemCard(item: item, onTap: () => _showDetail(item));
+            },
+          ),
+        );
+      },
+    );
+  }
 
   // 카테고리 칩 개수는 페이지네이션과 무관하게 현재 필터(종류·장소) 전체를
   // 대상으로 세야 하므로, 목록용 _filteredQuery와 별도로 limit 없는 쿼리를 둔다.
@@ -255,6 +329,10 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
   /// 에게는 아무 설명도 남지 않는다. 실패를 삼키지 말고 안내로 바꿔준다.
   Future<void> _refresh() async {
     _refreshCategoryCounts();
+    if (_searchQuery.trim().isNotEmpty) {
+      setState(_resetPaging);
+      return;
+    }
     try {
       await _filteredQuery.get(const GetOptions(source: Source.server));
     } catch (e) {
@@ -304,7 +382,10 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
                         onPressed: () {
                           _searchDebounce?.cancel();
                           _searchController.clear();
-                          setState(() => _searchQuery = '');
+                          setState(() {
+                            _searchQuery = '';
+                            _resetPaging();
+                          });
                         },
                       ),
               ),
@@ -371,122 +452,125 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
           const SizedBox(height: 10),
           const Divider(),
           Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: _filteredQuery.snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.hasError) {
-                  return FeedMessage(
-                    icon: Icons.error_outline_rounded,
-                    title: '목록을 불러오지 못했어요',
-                    text: '네트워크 상태를 확인한 뒤 다시 시도해주세요.',
-                    actionLabel: '다시 시도',
-                    onAction: () => setState(() {}),
-                  );
-                }
-                if (!snapshot.hasData) {
-                  return const ItemListSkeleton();
-                }
-
-                if (shouldFinishPageLoad(
-                  isLoadingMore: _isLoadingMore,
-                  hasLiveSnapshot:
-                      snapshot.connectionState == ConnectionState.active,
-                )) {
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (mounted) setState(() => _isLoadingMore = false);
-                  });
-                }
-
-                final docs = snapshot.data!.docs;
-                final visibleItems = LostFoundItem.fromDocs(
-                  docs,
-                ).where((item) => !item.isHidden).toList();
-                final items = _applySearch(visibleItems, blockedUids);
-                // 검색 중에도 페이지네이션은 그대로 적용된다 — 현재 페이지에
-                // 없어도 더 오래된 페이지에 일치하는 글이 있을 수 있으므로
-                // "더 보기"로 계속 찾을 수 있게 한다.
-                final canLoadMore = shouldShowLoadMore(
-                  loadedCount: docs.length,
-                  limit: _limit,
-                  isLoadingMore: _isLoadingMore,
-                );
-
-                if (items.isEmpty && canLoadMore) {
-                  return FeedMessage(
-                    icon: Icons.search_off_rounded,
-                    title: '아직 찾지 못했어요',
-                    text: '지금까지 불러온 글에는 일치하는 결과가 없어요.\n더 불러와서 계속 찾아볼 수 있어요.',
-                    actionLabel: _isLoadingMore ? '불러오는 중…' : '더 불러오기',
-                    onAction: _loadNextPage,
-                  );
-                }
-
-                if (items.isEmpty) {
-                  final isSearching = _searchQuery.trim().isNotEmpty;
-                  final hasFilter =
-                      _selectedCategory != '전체' ||
-                      _selectedLocation != _kAllLocations ||
-                      _selectedFilter != 0;
-                  if (isSearching) {
-                    // 검색과 필터를 함께 걸어 0건이 된 경우, 진짜로 없는
-                    // 것인지 필터 탓인지 알 수 없으므로 해제할 길을 준다.
-                    if (hasFilter) {
-                      return FeedMessage(
-                        icon: Icons.search_off_rounded,
-                        title: '조건에 맞는 검색 결과가 없어요',
-                        text: '필터를 해제하면 더 많은 결과를 볼 수 있어요.',
-                        actionLabel: '필터 해제하고 검색',
-                        onAction: _clearFilters,
-                      );
-                    }
-                    return const FeedMessage(
-                      icon: Icons.search_off_rounded,
-                      title: '검색 결과가 없어요',
-                      text: '다른 검색어로 다시 찾아보세요.',
-                    );
-                  }
-                  if (hasFilter) {
-                    return FeedMessage(
-                      icon: Icons.filter_alt_off_outlined,
-                      title: '조건에 맞는 글이 없어요',
-                      text: '필터를 바꾸거나 해제하면 더 많은 글을 볼 수 있어요.',
-                      actionLabel: '필터 모두 해제',
-                      onAction: _clearFilters,
-                    );
-                  }
-                  return FeedMessage(
-                    icon: Icons.inbox_outlined,
-                    title: '아직 등록된 글이 없어요',
-                    text: '잃어버렸거나 주운 물건이 있다면\n첫 게시글을 등록해보세요.',
-                    actionLabel: '글 등록하기',
-                    onAction: _goToRegisterScreen,
-                  );
-                }
-
-                return RefreshIndicator(
-                  color: AppColors.primary,
-                  onRefresh: _refresh,
-                  child: ListView.separated(
-                    padding: const EdgeInsets.only(bottom: 100),
-                    itemCount: items.length + (canLoadMore ? 1 : 0),
-                    separatorBuilder: (context, index) => const Divider(),
-                    itemBuilder: (context, index) {
-                      if (index == items.length) {
-                        return LoadMoreButton(
-                          isLoading: _isLoadingMore,
-                          onPressed: _loadNextPage,
+            child: _searchQuery.trim().isNotEmpty
+                ? _buildSearchResults(blockedUids)
+                : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                    stream: _filteredQuery.snapshots(),
+                    builder: (context, snapshot) {
+                      if (snapshot.hasError) {
+                        return FeedMessage(
+                          icon: Icons.error_outline_rounded,
+                          title: '목록을 불러오지 못했어요',
+                          text: '네트워크 상태를 확인한 뒤 다시 시도해주세요.',
+                          actionLabel: '다시 시도',
+                          onAction: () => setState(() {}),
                         );
                       }
-                      final item = items[index];
-                      return ItemCard(
-                        item: item,
-                        onTap: () => _showDetail(item),
+                      if (!snapshot.hasData) {
+                        return const ItemListSkeleton();
+                      }
+
+                      if (shouldFinishPageLoad(
+                        isLoadingMore: _isLoadingMore,
+                        hasLiveSnapshot:
+                            snapshot.connectionState == ConnectionState.active,
+                      )) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted) setState(() => _isLoadingMore = false);
+                        });
+                      }
+
+                      final docs = snapshot.data!.docs;
+                      final visibleItems = LostFoundItem.fromDocs(
+                        docs,
+                      ).where((item) => !item.isHidden).toList();
+                      final items = _applySearch(visibleItems, blockedUids);
+                      // 검색 중에도 페이지네이션은 그대로 적용된다 — 현재 페이지에
+                      // 없어도 더 오래된 페이지에 일치하는 글이 있을 수 있으므로
+                      // "더 보기"로 계속 찾을 수 있게 한다.
+                      final canLoadMore = shouldShowLoadMore(
+                        loadedCount: docs.length,
+                        limit: _limit,
+                        isLoadingMore: _isLoadingMore,
+                      );
+
+                      if (items.isEmpty && canLoadMore) {
+                        return FeedMessage(
+                          icon: Icons.search_off_rounded,
+                          title: '아직 찾지 못했어요',
+                          text:
+                              '지금까지 불러온 글에는 일치하는 결과가 없어요.\n더 불러와서 계속 찾아볼 수 있어요.',
+                          actionLabel: _isLoadingMore ? '불러오는 중…' : '더 불러오기',
+                          onAction: _loadNextPage,
+                        );
+                      }
+
+                      if (items.isEmpty) {
+                        final isSearching = _searchQuery.trim().isNotEmpty;
+                        final hasFilter =
+                            _selectedCategory != '전체' ||
+                            _selectedLocation != _kAllLocations ||
+                            _selectedFilter != 0;
+                        if (isSearching) {
+                          // 검색과 필터를 함께 걸어 0건이 된 경우, 진짜로 없는
+                          // 것인지 필터 탓인지 알 수 없으므로 해제할 길을 준다.
+                          if (hasFilter) {
+                            return FeedMessage(
+                              icon: Icons.search_off_rounded,
+                              title: '조건에 맞는 검색 결과가 없어요',
+                              text: '필터를 해제하면 더 많은 결과를 볼 수 있어요.',
+                              actionLabel: '필터 해제하고 검색',
+                              onAction: _clearFilters,
+                            );
+                          }
+                          return const FeedMessage(
+                            icon: Icons.search_off_rounded,
+                            title: '검색 결과가 없어요',
+                            text: '다른 검색어로 다시 찾아보세요.',
+                          );
+                        }
+                        if (hasFilter) {
+                          return FeedMessage(
+                            icon: Icons.filter_alt_off_outlined,
+                            title: '조건에 맞는 글이 없어요',
+                            text: '필터를 바꾸거나 해제하면 더 많은 글을 볼 수 있어요.',
+                            actionLabel: '필터 모두 해제',
+                            onAction: _clearFilters,
+                          );
+                        }
+                        return FeedMessage(
+                          icon: Icons.inbox_outlined,
+                          title: '아직 등록된 글이 없어요',
+                          text: '잃어버렸거나 주운 물건이 있다면\n첫 게시글을 등록해보세요.',
+                          actionLabel: '글 등록하기',
+                          onAction: _goToRegisterScreen,
+                        );
+                      }
+
+                      return RefreshIndicator(
+                        color: AppColors.primary,
+                        onRefresh: _refresh,
+                        child: ListView.separated(
+                          padding: const EdgeInsets.only(bottom: 100),
+                          itemCount: items.length + (canLoadMore ? 1 : 0),
+                          separatorBuilder: (context, index) => const Divider(),
+                          itemBuilder: (context, index) {
+                            if (index == items.length) {
+                              return LoadMoreButton(
+                                isLoading: _isLoadingMore,
+                                onPressed: _loadNextPage,
+                              );
+                            }
+                            final item = items[index];
+                            return ItemCard(
+                              item: item,
+                              onTap: () => _showDetail(item),
+                            );
+                          },
+                        ),
                       );
                     },
                   ),
-                );
-              },
-            ),
           ),
         ],
       ),

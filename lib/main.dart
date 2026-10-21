@@ -12,6 +12,7 @@ import 'screens/auth_gate.dart';
 import 'services/analytics_service.dart';
 import 'services/backend_http.dart';
 import 'services/push_notifications.dart';
+import 'services/notification_outbox.dart';
 import 'theme/app_theme.dart';
 import 'widgets/app_user_data.dart';
 import 'widgets/startup_failure_app.dart';
@@ -60,6 +61,7 @@ Future<void> _bootstrap() async {
 }
 
 Future<void> _initializeDeferredServices() async {
+  NotificationDelivery.instance.start();
   // 운영 백엔드는 App Check 실패를 기본 차단한다. Android Play Integrity와
   // iOS App Attest/DeviceCheck가 콘솔에 설정돼 있어야 인증·업로드 API가 동작한다.
   try {

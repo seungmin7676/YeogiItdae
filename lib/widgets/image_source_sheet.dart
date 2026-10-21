@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../theme/app_theme.dart';
+import 'safety_notice.dart';
 
 /// 사진 첨부 방식을 고르는 바텀시트. 카메라로 찍거나 갤러리에서 고를 수 있다.
 /// null을 반환하면 아무것도 선택하지 않고 닫은 것이다.
@@ -16,6 +17,10 @@ Future<ImageSource?> showImageSourceSheet(BuildContext context) {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: SafetyNotice(text: photoPrivacyNotice),
+          ),
           ListTile(
             leading: const Icon(
               Icons.photo_camera_outlined,

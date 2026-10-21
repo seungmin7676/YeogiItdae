@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../services/item_queries.dart';
+import '../services/push_notifications.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_user_data.dart';
 import '../widgets/count_badge.dart';
@@ -20,6 +21,14 @@ class MainNavScreen extends StatefulWidget {
 }
 
 class _MainNavScreenState extends State<MainNavScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) PushNotifications.markNavigationReady();
+    });
+  }
+
   int _currentIndex = 0;
 
   // chats 쿼리에 limit이 없으면 대화방이 많은 사용자일수록 앱을 열 때마다

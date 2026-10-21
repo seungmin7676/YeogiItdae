@@ -1,6 +1,28 @@
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'backend_exception.dart';
+import 'backend_http.dart';
+
 const int kMaxChatMessageLength = 2000;
+const int kChatMessagePageSize = 50;
+
+Query<Map<String, dynamic>> buildChatMessagesQuery(
+  CollectionReference<Map<String, dynamic>> messages, {
+  Timestamp? clearedAt,
+  DocumentSnapshot<Map<String, dynamic>>? before,
+}) {
+  Query<Map<String, dynamic>> query = messages.orderBy(
+    'createdAt',
+    descending: true,
+  );
+  if (clearedAt != null) {
+    query = query.where('createdAt', isGreaterThan: clearedAt);
+  }
+  if (before != null) query = query.startAfterDocument(before);
+  return query.limit(kChatMessagePageSize);
+}
 
 /// 새 채팅방의 로컬 대기 쓰기를 서버 확정된 문서로 오인해 메시지 쿼리를
 /// 너무 일찍 열지 않도록 한다. 부모 채팅 문서가 서버에 아직 없을 때 하위
@@ -15,8 +37,34 @@ bool shouldStartMessagesStream({
 /// 차단 여부를 발신자에게 노출하지 않기 위해 이 경우에만 서버 오류 대신
 /// 발신자 기기의 로컬 말풍선으로 남긴다. 네트워크·인증 등 다른 실패까지
 /// 숨기면 실제 장애를 알아차릴 수 없으므로 구분한다.
-bool shouldKeepAsLocalChatEcho(Object error) =>
-    error is FirebaseException && error.code == 'permission-denied';
+bool shouldKeepAsLocalChatEcho(Object error, {bool blockConfirmed = false}) =>
+    blockConfirmed &&
+    error is FirebaseException &&
+    error.code == 'permission-denied';
+
+/// 다른 사용자 차단 문서를 공개하지 않고 실제 차단으로 거부됐는지 확인한다.
+/// 서버 확인 실패는 정상 전송으로 위장하지 않고 원래 오류로 처리한다.
+Future<bool> confirmBlockedChatSend({
+  required String chatId,
+  required String recipientUid,
+  String? itemId,
+}) async {
+  final response = await postBackend(
+    Uri.parse('$kVerifyBackendUrl/api/send-push'),
+    headers: await backendSecurityHeaders(
+      authenticate: true,
+    ).timeout(const Duration(seconds: 10)),
+    body: jsonEncode({
+      'action': 'check-chat-rejection',
+      'chatId': chatId,
+      'recipientUid': recipientUid,
+      'itemId': ?itemId,
+    }),
+  );
+  if (response.statusCode != 200) return false;
+  final decoded = jsonDecode(response.body);
+  return decoded is Map && decoded['localOnly'] == true;
+}
 
 /// 채팅 메시지 전송의 데이터 계층.
 ///

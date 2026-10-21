@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -22,6 +23,7 @@ import '../widgets/confirm_dialog.dart';
 import '../widgets/feed_message.dart';
 import '../widgets/image_source_sheet.dart';
 import '../widgets/user_profile.dart';
+import '../widgets/safety_notice.dart';
 import 'item_detail_sheet.dart';
 
 /// 화면: 1:1 채팅
@@ -61,6 +63,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   // 스크롤을 건드리지 않아, 이전 대화를 올려 보던 사용자가 아래로 튕겨
   // 내려가지 않게 한다.
   int _lastMessageCount = -1;
+  final Map<String, QueryDocumentSnapshot<Map<String, dynamic>>>
+  _messageDocuments = {};
+  bool _hasMoreHistory = false;
+  bool _loadedHistory = false;
+  bool _loadingHistory = false;
+  bool _preserveHistoryScroll = false;
+  Timestamp? _messagesClearedAt;
   late final ChatMessageSender _messageSender = ChatMessageSender(
     FirebaseFirestore.instance,
   );
@@ -151,12 +160,17 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
-  void _addLocalTextEcho({required String senderUid, required String text}) {
+  void _addLocalTextEcho({
+    required String senderUid,
+    String text = '',
+    String imageDataUrl = '',
+  }) {
     final sentAt = DateTime.now();
     final echo = LocalChatEcho(
       id: 'local-${sentAt.microsecondsSinceEpoch}',
       text: text,
       sentAt: sentAt,
+      imageDataUrl: imageDataUrl,
     );
     if (mounted) {
       setState(() => _localTextEchoes.add(echo));
@@ -190,11 +204,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               _chatData?['clearedAt'] as Map? ?? const {},
             )[FirebaseAuth.instance.currentUser?.uid]
             as Timestamp?;
-    Query<Map<String, dynamic>> query = _messagesRef.orderBy('createdAt');
-    if (clearedAt != null) {
-      query = query.where('createdAt', isGreaterThan: clearedAt);
-    }
-    _messagesStream = query.snapshots();
+    _messagesClearedAt = clearedAt;
+    _messagesStream = buildChatMessagesQuery(
+      _messagesRef,
+      clearedAt: clearedAt,
+    ).snapshots();
 
     // 채팅방을 켜둔 채로 새 메시지가 도착해도 안읽음 처리되지 않도록,
     // 메시지가 갱신될 때마다 읽음 시각을 함께 갱신한다. 부모 채팅방 문서가
@@ -212,6 +226,68 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
   }
 
+  Future<void> _loadOlderMessages() async {
+    if (_loadingHistory || !_hasMoreHistory || _messageDocuments.isEmpty) {
+      return;
+    }
+    final confirmed =
+        _messageDocuments.values
+            .where(
+              (doc) =>
+                  doc.data()['createdAt'] is Timestamp &&
+                  !doc.metadata.hasPendingWrites,
+            )
+            .toList()
+          ..sort((a, b) {
+            final time = (a.data()['createdAt'] as Timestamp).compareTo(
+              b.data()['createdAt'] as Timestamp,
+            );
+            return time != 0 ? time : a.id.compareTo(b.id);
+          });
+    if (confirmed.isEmpty) return;
+    setState(() => _loadingHistory = true);
+    try {
+      final snapshot = await buildChatMessagesQuery(
+        _messagesRef,
+        clearedAt: _messagesClearedAt,
+        before: confirmed.first,
+      ).get().timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+      setState(() {
+        for (final doc in snapshot.docs) {
+          _messageDocuments[doc.id] = doc;
+        }
+        _loadedHistory = true;
+        _hasMoreHistory = snapshot.docs.length == kChatMessagePageSize;
+        _preserveHistoryScroll = true;
+      });
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('이전 메시지를 불러오지 못했어요. 다시 눌러주세요.')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _loadingHistory = false);
+    }
+  }
+
+  Future<bool> _isConfirmedBlock(Object error) async {
+    if (error is! FirebaseException || error.code != 'permission-denied') {
+      return false;
+    }
+    try {
+      final confirmed = await confirmBlockedChatSend(
+        chatId: widget.chatId,
+        recipientUid: widget.otherUid,
+        itemId: widget.itemId ?? _chatData?['itemId'] as String?,
+      );
+      return shouldKeepAsLocalChatEcho(error, blockConfirmed: confirmed);
+    } catch (_) {
+      return false;
+    }
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // 앱을 백그라운드로 보내면(홈으로 나가기, 다른 앱으로 전환 등) "입력
@@ -226,7 +302,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
-        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        _scrollController.jumpTo(_scrollController.position.minScrollExtent);
       }
     });
   }
@@ -298,7 +374,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final chatRef = FirebaseFirestore.instance
         .collection('chats')
         .doc(widget.chatId);
-    final snap = await chatRef.get();
+    final snap = await chatRef
+        .get(const GetOptions(source: Source.server))
+        .timeout(const Duration(seconds: 10));
     if (snap.exists) {
       _chatDocEnsured = true;
       return false;
@@ -342,13 +420,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   /// 방금 보낸 메시지를 상대에게 푸시로 보낸다. 첫 문의(방 생성)면
   /// chat_started, 이후면 chat_message 종류로 발송한다.
-  void _pushForMessage(
+  Future<void> _pushForMessage(
     User user, {
     required bool created,
     required String body,
     required String messageId,
   }) {
-    sendPush(
+    return sendPush(
       recipientUid: widget.otherUid,
       type: created ? 'chat_started' : 'chat_message',
       title: user.displayName ?? '익명',
@@ -405,7 +483,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _send() async {
-    if (_isSendingText) return;
+    if (_isSendingText || _isSendingImage) return;
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
     final user = FirebaseAuth.instance.currentUser;
@@ -413,7 +491,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     // 커밋을 기다리는 동안 두 번째 탭/엔터가 같은 텍스트를 다시 읽어
     // 중복 전송하지 못하도록, 재진입을 막고 입력창을 즉시 비운다.
-    _isSendingText = true;
+    setState(() => _isSendingText = true);
     _messageController.clear();
     _typingTimer?.cancel();
     _isTypingFlagSet = false;
@@ -427,7 +505,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         text: text,
       );
       if (messageId != null) {
-        _pushForMessage(
+        await _pushForMessage(
           user,
           created: created,
           body: text,
@@ -435,14 +513,14 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         );
       }
     } catch (e) {
-      if (shouldKeepAsLocalChatEcho(e)) {
+      if (await _isConfirmedBlock(e)) {
         // 상대방의 차단 여부를 알리지 않는다. 서버에는 저장되지 않은 채
         // 발신자 기기에만 일반 메시지와 같은 말풍선으로 남긴다.
         _addLocalTextEcho(senderUid: user.uid, text: text);
       } else {
         // 일반 장애라면 비웠던 내용을 되돌려 그대로 다시 보낼 수 있게 한다.
-        if (_messageController.text.isEmpty) _messageController.text = text;
         if (mounted) {
+          if (_messageController.text.isEmpty) _messageController.text = text;
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text('메시지 전송에 실패했습니다: ${friendlyErrorMessage(e)}'),
@@ -451,7 +529,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         }
       }
     } finally {
-      _isSendingText = false;
+      if (mounted) setState(() => _isSendingText = false);
     }
   }
 
@@ -460,6 +538,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   static const int _maxImagesPerSend = 5;
 
   Future<void> _sendImage() async {
+    if (_isSendingImage || _isSendingText) return;
     final source = await showImageSourceSheet(context);
     if (source == null) return;
 
@@ -526,17 +605,31 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         'unreadCount.${widget.otherUid}': FieldValue.increment(urls.length),
       });
       await batch.commit();
-      _pushForMessage(
+      await _pushForMessage(
         user,
         created: created,
         body: lastMessageText,
         messageId: messageRefs.last.id,
       );
     } catch (e) {
+      final blocked = await _isConfirmedBlock(e);
+      if (blocked) {
+        for (final file in picked) {
+          try {
+            final bytes = await file.readAsBytes();
+            _addLocalTextEcho(
+              senderUid: user.uid,
+              imageDataUrl: 'data:image/jpeg;base64,${base64Encode(bytes)}',
+            );
+          } catch (_) {
+            _addLocalTextEcho(senderUid: user.uid, text: '사진을 보냈습니다');
+          }
+        }
+      }
       try {
         await deleteUploadedMedia(urls);
       } catch (_) {}
-      if (mounted) {
+      if (mounted && !blocked) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('사진 전송에 실패했습니다: ${friendlyErrorMessage(e)}')),
         );
@@ -553,15 +646,24 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     required Timestamp? otherLastReadAt,
     required int bubbleDecodeWidth,
   }) {
+    if (documents.isNotEmpty) {
+      for (final doc in documents) {
+        _messageDocuments[doc.id] = doc;
+      }
+      if (!_loadedHistory) {
+        _hasMoreHistory = documents.length == kChatMessagePageSize;
+      }
+    }
+    final allDocuments = _messageDocuments.values.toList();
     final clearedAt =
         Map<String, dynamic>.from(
               _chatData?['clearedAt'] as Map? ?? const {},
             )[myUid]
             as Timestamp?;
     final entries = <_ChatMessageEntry>[
-      for (var index = 0; index < documents.length; index += 1)
-        if (!myBlockedUids.contains(documents[index].data()['senderUid']))
-          _ChatMessageEntry.fromDocument(documents[index], order: index),
+      for (var index = 0; index < allDocuments.length; index += 1)
+        if (!myBlockedUids.contains(allDocuments[index].data()['senderUid']))
+          _ChatMessageEntry.fromDocument(allDocuments[index], order: index),
       for (var index = 0; index < _localTextEchoes.length; index += 1)
         if (clearedAt == null ||
             _localTextEchoes[index].sentAt.isAfter(clearedAt.toDate()))
@@ -583,14 +685,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     if (entries.length != _lastMessageCount) {
       _lastMessageCount = entries.length;
-      _scrollToBottom();
+      final nearBottom =
+          !_scrollController.hasClients || _scrollController.offset < 120;
+      if (!_preserveHistoryScroll && nearBottom) _scrollToBottom();
     }
+    _preserveHistoryScroll = false;
     return ListView.builder(
       controller: _scrollController,
+      reverse: true,
       padding: const EdgeInsets.all(16),
-      itemCount: entries.length,
+      itemCount: entries.length + (_hasMoreHistory ? 1 : 0),
       itemBuilder: (context, index) {
-        final entry = entries[index];
+        if (index == entries.length) {
+          return Center(
+            child: TextButton(
+              onPressed: _loadingHistory ? null : _loadOlderMessages,
+              child: Text(_loadingHistory ? '불러오는 중…' : '이전 메시지 보기'),
+            ),
+          );
+        }
+        final entry = entries[entries.length - 1 - index];
         final isMine = entry.senderUid == myUid;
         final isImage = entry.type == 'image';
         final createdAt = entry.createdAt;
@@ -619,20 +733,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   ),
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(kRadiusLg),
-                    child: CachedNetworkImage(
-                      imageUrl: entry.imageUrl,
-                      fit: BoxFit.cover,
-                      memCacheWidth: bubbleDecodeWidth,
-                      errorWidget: (context, url, error) => Container(
-                        width: 160,
-                        height: 160,
-                        color: AppColors.surfaceAlt,
-                        child: const Icon(
-                          Icons.broken_image_outlined,
-                          color: AppColors.inkFaint,
-                        ),
-                      ),
-                    ),
+                    child: entry.imageUrl.startsWith('data:image/')
+                        ? Image.memory(
+                            Uri.parse(entry.imageUrl).data!.contentAsBytes(),
+                            fit: BoxFit.cover,
+                            cacheWidth: bubbleDecodeWidth,
+                          )
+                        : CachedNetworkImage(
+                            imageUrl: entry.imageUrl,
+                            fit: BoxFit.cover,
+                            memCacheWidth: bubbleDecodeWidth,
+                            errorWidget: (context, url, error) => Container(
+                              width: 160,
+                              height: 160,
+                              color: AppColors.surfaceAlt,
+                              child: const Icon(
+                                Icons.broken_image_outlined,
+                                color: AppColors.inkFaint,
+                              ),
+                            ),
+                          ),
                   ),
                 ),
               ),
@@ -735,7 +855,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               onTap: () => Navigator.pop(dialogContext),
               child: Center(
                 child: InteractiveViewer(
-                  child: CachedNetworkImage(imageUrl: url),
+                  child: url.startsWith('data:image/')
+                      ? Image.memory(Uri.parse(url).data!.contentAsBytes())
+                      : CachedNetworkImage(imageUrl: url),
                 ),
               ),
             ),
@@ -748,14 +870,15 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     tooltip: '닫기',
                     onPressed: () => Navigator.pop(dialogContext),
                   ),
-                  IconButton(
-                    icon: const Icon(
-                      Icons.download_outlined,
-                      color: Colors.white,
+                  if (!url.startsWith('data:image/'))
+                    IconButton(
+                      icon: const Icon(
+                        Icons.download_outlined,
+                        color: Colors.white,
+                      ),
+                      tooltip: '사진 저장',
+                      onPressed: () => saveImageToDevice(dialogContext, url),
                     ),
-                    tooltip: '사진 저장',
-                    onPressed: () => saveImageToDevice(dialogContext, url),
-                  ),
                 ],
               ),
             ),
@@ -1139,8 +1262,13 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                   if (value == 'reveal') _revealRealName();
                   if (value == 'leave') _leaveChat();
                   if (value == 'block') _blockUser();
+                  if (value == 'safety') showHandoverSafety(context);
                 },
                 itemBuilder: (context) => [
+                  const PopupMenuItem(
+                    value: 'safety',
+                    child: Text('안전하게 전달하기'),
+                  ),
                   // 거래완료 확인 요청은 게시글 작성자만, 그리고 게시글이
                   // 아직 남아있을 때만 할 수 있는 동작이다.
                   if (isOwner && !itemDeleted)
@@ -1168,6 +1296,11 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       ),
       body: Column(
         children: [
+          if (_isSendingText)
+            const _ChatBanner(
+              icon: Icons.hourglass_empty_rounded,
+              text: '메시지를 전송하고 있어요. 연결이 느리면 잠시 기다려주세요.',
+            ),
           Builder(
             builder: (context) {
               final data = _chatData;
@@ -1319,8 +1452,19 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                         ),
                       );
                     }
+                    final live = snapshot.data!;
+                    for (final change in live.docChanges) {
+                      if (change.type != DocumentChangeType.removed) continue;
+                      final previous = _messageDocuments[change.doc.id];
+                      // 제한 쿼리에서 밀려난 과거 메시지는 보존하되,
+                      // 서버에서 거절된 로컬 대기 메시지는 중복 말풍선으로 남기지 않는다.
+                      if (previous?.metadata.hasPendingWrites == true ||
+                          live.docs.length < kChatMessagePageSize) {
+                        _messageDocuments.remove(change.doc.id);
+                      }
+                    }
                     return _buildMessageList(
-                      documents: snapshot.data!.docs,
+                      documents: live.docs,
                       myBlockedUids: myBlockedUids,
                       myUid: myUid,
                       otherLastReadAt: otherLastReadAt,
@@ -1345,7 +1489,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                 child: Row(
                   children: [
                     IconButton(
-                      onPressed: _isSendingImage ? null : _sendImage,
+                      onPressed: _isSendingImage || _isSendingText
+                          ? null
+                          : _sendImage,
                       tooltip: '사진 보내기',
                       icon: _isSendingImage
                           ? const SizedBox(
@@ -1402,7 +1548,10 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     ValueListenableBuilder<TextEditingValue>(
                       valueListenable: _messageController,
                       builder: (context, value, child) {
-                        final canSend = value.text.trim().isNotEmpty;
+                        final canSend =
+                            value.text.trim().isNotEmpty &&
+                            !_isSendingText &&
+                            !_isSendingImage;
                         return Material(
                           color: canSend
                               ? AppColors.primary
@@ -1482,9 +1631,9 @@ class _ChatMessageEntry {
   }) => _ChatMessageEntry(
     id: echo.id,
     senderUid: senderUid,
-    type: 'text',
+    type: echo.imageDataUrl.isEmpty ? 'text' : 'image',
     text: echo.text,
-    imageUrl: '',
+    imageUrl: echo.imageDataUrl,
     createdAt: echo.sentAt,
     isLocalOnly: true,
     order: order,
@@ -1501,9 +1650,9 @@ int _compareChatMessageEntries(
     final comparison = firstTime.compareTo(secondTime);
     if (comparison != 0) return comparison;
   } else if (firstTime == null && secondTime != null) {
-    return -1;
-  } else if (firstTime != null && secondTime == null) {
     return 1;
+  } else if (firstTime != null && secondTime == null) {
+    return -1;
   }
   return first.order.compareTo(second.order);
 }

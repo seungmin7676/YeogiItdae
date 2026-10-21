@@ -54,14 +54,18 @@ async function reserveNotification(admin, db, decoded, itemId, title, match) {
   const notificationRef = db.collection('notifications').doc(id);
   return db.runTransaction(async (tx) => {
     const existing = await tx.get(deliveryRef);
-    if (existing.exists) return false;
-    tx.create(deliveryRef, {
+    if (existing.exists && !['retry', 'processing'].includes(existing.data().status)) return 'complete';
+    if (existing.exists && existing.data().status === 'processing' &&
+        existing.data().lockedUntil > Date.now()) return 'busy';
+    tx.set(deliveryRef, {
       itemId,
       recipientUid: match.recipientUid,
+      status: 'processing',
+      lockedUntil: Date.now() + 60 * 1000,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       expiresAt: admin.firestore.Timestamp.fromMillis(Date.now() + 30 * 24 * 60 * 60 * 1000),
-    });
-    tx.set(notificationRef, {
+    }, { merge: true });
+    if (!existing.exists) tx.set(notificationRef, {
       recipientUid: match.recipientUid,
       senderUid: decoded.uid,
       type: 'keyword_match',
@@ -72,7 +76,7 @@ async function reserveNotification(admin, db, decoded, itemId, title, match) {
       read: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
-    return true;
+    return 'reserved';
   });
 }
 
@@ -171,17 +175,22 @@ module.exports = async (req, res) => {
   // itemId+수신자 조합을 서버에서 예약하고 같은 ID의 인앱 알림을 쓴다.
   // 클라이언트 재시도·연타가 와도 한 사람에게 한 번만 남는다.
   const reservedMatches = [];
+  let busyMatches = 0;
   for (const match of matches) {
-    if (await reserveNotification(admin, db, decoded, itemId, title, match)) {
+    const reservation = await reserveNotification(admin, db, decoded, itemId, title, match);
+    if (reservation === 'busy') busyMatches += 1;
+    if (reservation === 'reserved') {
       reservedMatches.push(match);
     }
   }
   if (reservedMatches.length === 0) {
+    if (busyMatches) return res.status(503).json({ retryable: true, failed: busyMatches });
     return res.status(200).json({ ok: true, matched: 0, skipped: 'duplicate' });
   }
 
   // 백그라운드 푸시. 한 명이 실패해도 나머지는 계속 보낸다.
   let pushed = 0;
+  let retryableFailures = busyMatches;
   for (const m of reservedMatches) {
     try {
       const result = await sendPushToUser(admin, {
@@ -194,15 +203,24 @@ module.exports = async (req, res) => {
             ? `구독한 카테고리 '${m.keyword}'에 새 글이 등록됐어요`
             : `저장한 키워드 '${m.keyword}'와 일치하는 글이 등록됐어요`,
         data: { itemId, matchType: m.matchType, keyword: m.keyword },
+        deliveryKey: deliveryId(itemId, m.recipientUid),
       });
+      if (result.retryable || result.failed > 0) throw new Error('temporary-delivery-failure');
+      await db.collection('keywordDeliveries').doc(deliveryId(itemId, m.recipientUid))
+        .set({ status: 'complete', lockedUntil: 0 }, { merge: true });
       if (!result.skipped) pushed += 1;
     } catch (e) {
       console.error('[notify-matches] push failed for', m.recipientUid, e.message);
       // 알림 문서는 결정적 ID라 중복되지 않는다. 예약만 풀어 다음 요청에서
       // 푸시를 재시도할 수 있게 한다.
-      await db.collection('keywordDeliveries').doc(deliveryId(itemId, m.recipientUid)).delete();
+      retryableFailures += 1;
+      await db.collection('keywordDeliveries').doc(deliveryId(itemId, m.recipientUid))
+        .set({ status: 'retry', lockedUntil: 0 }, { merge: true });
     }
   }
 
-  return res.status(200).json({ ok: true, matched: reservedMatches.length, pushed });
+  return res.status(retryableFailures ? 503 : 200).json({
+    ok: retryableFailures === 0, matched: reservedMatches.length, pushed,
+    failed: retryableFailures, retryable: retryableFailures > 0,
+  });
 };

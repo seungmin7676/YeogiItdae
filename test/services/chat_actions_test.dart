@@ -5,13 +5,23 @@ import 'package:latte/services/chat_actions.dart';
 
 void main() {
   group('shouldKeepAsLocalChatEcho', () {
-    test('차단 규칙의 권한 오류만 로컬 말풍선으로 처리한다', () {
+    test('권한 오류만으로 전송 성공을 위장하지 않고 서버가 차단을 확인해야 한다', () {
       expect(
         shouldKeepAsLocalChatEcho(
           FirebaseException(
             plugin: 'cloud_firestore',
             code: 'permission-denied',
           ),
+        ),
+        isFalse,
+      );
+      expect(
+        shouldKeepAsLocalChatEcho(
+          FirebaseException(
+            plugin: 'cloud_firestore',
+            code: 'permission-denied',
+          ),
+          blockConfirmed: true,
         ),
         isTrue,
       );

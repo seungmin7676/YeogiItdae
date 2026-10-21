@@ -2,6 +2,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latte/services/item_queries.dart';
+import 'package:latte/services/feed_search.dart';
 import 'package:latte/services/search_tokens.dart';
 
 /// 서버 검색(searchTokens) 회귀 테스트.
@@ -52,27 +53,19 @@ void main() {
     bool sortByPopular = false,
     int limit = kInitialPageLimit,
   }) async {
-    final snap = await buildFeedQuery(
-      collection: items,
-      typeFilter: 0,
-      category: kAllFilterLabel,
-      location: kAllFilterLabel,
-      sortByPopular: sortByPopular,
-      limit: limit,
-      searchToken: searchTokenFor(query),
-    ).get();
-    // 화면과 같은 순서: 서버가 좁혀준 후보에 최종 판정을 적용한다.
-    return snap.docs
-        .map((d) => d.data())
-        .where(
-          (d) => matchesSearchQuery(
-            query,
-            title: d['title'] as String,
-            description: d['description'] as String,
-          ),
-        )
-        .map((d) => d['title'] as String)
-        .toList();
+    final results = await FeedSearchPager(
+      query: buildFeedQuery(
+        collection: items,
+        typeFilter: 0,
+        category: kAllFilterLabel,
+        location: kAllFilterLabel,
+        sortByPopular: sortByPopular,
+        limit: null,
+      ),
+      search: query,
+      pageSize: limit,
+    ).loadNext();
+    return results.map((item) => item.title).toList();
   }
 
   test('첫 페이지 밖(100번째 이전)에 있는 글도 검색으로 찾는다', () async {
@@ -129,7 +122,7 @@ void main() {
     expect(await search('지갑', sortByPopular: true), ['지갑 B', '지갑 A']);
   });
 
-  test('한 글자 검색어는 서버 토큰 없이 조회한다(불러온 목록 안에서만 거름)', () async {
+  test('한 글자 검색어도 목록 페이지 밖까지 조회한다', () async {
     await add(title: '지갑', index: 0);
     await add(title: '우산', index: 1);
 
@@ -145,9 +138,10 @@ void main() {
       searchToken: searchTokenFor('갑'),
     ).get();
     expect(snap.docs.length, 2);
+    expect(await search('갑'), ['지갑']);
   });
 
-  test('검색 토큰이 없는 예전 글은 검색에 걸리지 않는다(백필이 필요한 이유)', () async {
+  test('검색 토큰이 없는 예전 글도 검색으로 찾는다', () async {
     // 백필 전 상태를 재현한다 — searchTokens 필드가 없는 문서.
     await items.add({
       'title': '검은색 지갑',
@@ -165,6 +159,6 @@ void main() {
       'createdAt': Timestamp.fromDate(DateTime(2026, 1, 1)),
     });
 
-    expect(await search('지갑'), isEmpty);
+    expect(await search('지갑'), ['검은색 지갑']);
   });
 }
