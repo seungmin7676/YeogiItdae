@@ -18,6 +18,7 @@ process.env.GCLOUD_PROJECT = PROJECT_ID;
 
 let admin;
 const sentPushes = [];
+let transientPushFailure = false;
 
 // send-push는 운영에서 이메일 인증을 마친 한림대 사용자만 호출할 수 있다.
 async function signUpTestUser(email, password) {
@@ -29,15 +30,18 @@ before((t) => {
     exports: {
       sendPushToUser: async (_admin, payload) => {
         sentPushes.push(payload);
+        if (transientPushFailure) return { sent: 0, failed: 1, retryable: true };
         return { sent: 1, failed: 0 };
       },
     },
   });
   admin = require('../_admin');
+  require('../_lib').initAdmin();
 });
 
 beforeEach(async () => {
   sentPushes.length = 0;
+  transientPushFailure = false;
   await Promise.all([
     fetch(
       `http://${FIRESTORE_EMULATOR_HOST}/emulator/v1/projects/${PROJECT_ID}/databases/(default)/documents`,
@@ -79,6 +83,52 @@ async function seedChatMessage({
   });
   return messageId;
 }
+
+test('send-push: 실제 차단만 확인하고 다른 권한 오류는 정상 전송처럼 처리하지 않는다', async () => {
+  const sendPush = require('../api/send-push');
+  const alice = await signUpTestUser('alice@hallym.ac.kr', 'password123');
+  const bob = await signUpTestUser('bob@hallym.ac.kr', 'password123');
+  await seedChatMessage({ chatId: 'chat-block', senderUid: alice.localId, recipientUid: bob.localId });
+  const request = pushRequest(alice.idToken, {
+    action: 'check-chat-rejection', chatId: 'chat-block', recipientUid: bob.localId,
+  });
+  const normal = mockRes();
+  await sendPush(request, normal);
+  assert.equal(normal._json.localOnly, false);
+  await admin.firestore().collection('blocks').doc(bob.localId).set({ blockedUsers: { [alice.localId]: true } });
+  const blocked = mockRes();
+  await sendPush(request, blocked);
+  assert.equal(blocked._json.localOnly, true);
+  const unrelated = await signUpTestUser('mallory@hallym.ac.kr', 'password123');
+  const denied = mockRes();
+  await sendPush(pushRequest(unrelated.idToken, request.body), denied);
+  assert.equal(denied._json.localOnly, false);
+  assert.equal(sentPushes.length, 0);
+});
+
+test('send-push: 일시 전송 실패는 다음 요청에서 재시도하고 성공 후 중복은 막는다', async () => {
+  const sendPush = require('../api/send-push');
+  const alice = await signUpTestUser('alice@hallym.ac.kr', 'password123');
+  const bob = await signUpTestUser('bob@hallym.ac.kr', 'password123');
+  await seedChatMessage({ chatId: 'retry-chat', senderUid: alice.localId, recipientUid: bob.localId });
+  const request = pushRequest(alice.idToken, {
+    type: 'chat_message', recipientUid: bob.localId,
+    data: { chatId: 'retry-chat', messageId: 'message-1' },
+  });
+  transientPushFailure = true;
+  const failed = mockRes();
+  await sendPush(request, failed);
+  assert.equal(failed.statusCode, 503);
+  transientPushFailure = false;
+  const retried = mockRes();
+  await sendPush(request, retried);
+  assert.equal(retried.statusCode, 200);
+  assert.equal(sentPushes.length, 2);
+  const duplicate = mockRes();
+  await sendPush(request, duplicate);
+  assert.equal(duplicate._json.skipped, 'duplicate');
+  assert.equal(sentPushes.length, 2);
+});
 
 test('send-push: 인증 토큰이 없으면 401', async () => {
   const sendPush = require('../api/send-push');
@@ -154,6 +204,7 @@ test('send-push: 실제 본인 메시지는 채팅 상대에게 한 번만 보�
   assert.equal(delivery.size, 1);
   assert.ok(delivery.docs[0].data().expiresAt, '중복 방지 문서에 TTL이 있어야 한다');
   assert.deepEqual(sentPushes[0], {
+    deliveryKey: delivery.docs[0].id,
     recipientUid: bob.localId,
     senderUid: alice.localId,
     type: 'chat_message',
@@ -262,7 +313,7 @@ test('send-push: 오래된 메시지를 뒤늦게 재생해 푸시할 수 없다
     senderUid: alice.localId,
     recipientUid: bob.localId,
     messageId: 'old-message',
-    createdAt: admin.firestore.Timestamp.fromMillis(Date.now() - 6 * 60 * 1000),
+    createdAt: admin.firestore.Timestamp.fromMillis(Date.now() - 25 * 60 * 60 * 1000),
   });
 
   const res = mockRes();

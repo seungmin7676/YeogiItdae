@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -40,49 +41,89 @@ class PushNotifications {
   );
 
   static bool _initialized = false;
+  static Future<void>? _initializing;
+  static Timer? _initializationRetry;
+  static bool _registeringToken = false;
+  static final deviceStatus = ValueNotifier<String>('알림 상태를 확인해주세요.');
+  static String? _readyUid;
+  static String? _savedToken;
+  static String? _savedUid;
+  static bool _routing = false;
+  static final _pendingTaps = <Map<String, dynamic>>[];
+  static const _webVapidKey = String.fromEnvironment('FCM_WEB_VAPID_KEY');
 
-  /// main()에서 Firebase 초기화 직후 한 번 호출한다. 웹은 별도 설정
-  /// (VAPID 키 등)이 필요하므로 지금은 모바일에서만 동작시킨다.
+  /// 초기화 실패는 재시도하고, 웹 권한은 알림 설정의 사용자 동작으로 요청한다.
   static Future<void> init() async {
-    if (_initialized || kIsWeb) return;
-    _initialized = true;
+    if (_initialized) return;
+    try {
+      await (_initializing ??= _initialize().whenComplete(
+        () => _initializing = null,
+      ));
+      _initializationRetry?.cancel();
+    } catch (_) {
+      _initializationRetry?.cancel();
+      _initializationRetry = Timer(const Duration(seconds: 15), () {
+        unawaited(init());
+      });
+    }
+  }
 
-    const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const darwinInit = DarwinInitializationSettings();
-    await _local.initialize(
-      settings: const InitializationSettings(
-        android: androidInit,
-        iOS: darwinInit,
-      ),
-      onDidReceiveNotificationResponse: (response) {
-        final payload = response.payload;
-        if (payload != null && payload.isNotEmpty) {
-          _handleTap(_decodePayload(payload));
-        }
-      },
-    );
-    await _local
-        .resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin
-        >()
-        ?.createNotificationChannel(_channel);
+  static Future<void> _initialize() async {
+    if (!await FirebaseMessaging.instance.isSupported()) {
+      deviceStatus.value = '이 환경에서는 기기 알림을 지원하지 않아요.';
+      return;
+    }
 
-    // 알림 권한은 여기서 묻지 않는다. 앱을 처음 켠 순간(로그인 화면도 보기
-    // 전)에 시스템 팝업을 띄우면 "이 앱이 왜 알림이 필요한지" 알 수 없어
-    // 거부율이 높고, 한 번 거부하면 설정에서 직접 켜야 한다. 실제로 알림을
-    // 받을 수 있는 상태(이메일 인증까지 끝난 로그인)가 됐을 때 묻는다.
-    FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    if (!kIsWeb) {
+      const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
+      const darwinInit = DarwinInitializationSettings();
+      await _local.initialize(
+        settings: const InitializationSettings(
+          android: androidInit,
+          iOS: darwinInit,
+        ),
+        onDidReceiveNotificationResponse: (response) {
+          final payload = response.payload;
+          if (payload != null && payload.isNotEmpty) {
+            _handleTap(_decodePayload(payload));
+          }
+        },
+      );
+      await _local
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >()
+          ?.createNotificationChannel(_channel);
+      final launch = await _local.getNotificationAppLaunchDetails();
+      final payload = launch?.notificationResponse?.payload;
+      if (launch?.didNotificationLaunchApp == true && payload != null) {
+        _pendingTaps.add(_decodePayload(payload));
+      }
+
+      // 알림 권한은 여기서 묻지 않는다. 앱을 처음 켠 순간(로그인 화면도 보기
+      // 전)에 시스템 팝업을 띄우면 "이 앱이 왜 알림이 필요한지" 알 수 없어
+      // 거부율이 높고, 한 번 거부하면 설정에서 직접 켜야 한다. 실제로 알림을
+      // 받을 수 있는 상태(이메일 인증까지 끝난 로그인)가 됐을 때 묻는다.
+      FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
+    }
 
     // 포그라운드: 시스템이 알림을 자동 표시하지 않으므로 직접 로컬 알림으로 띄운다.
-    FirebaseMessaging.onMessage.listen(_showForeground);
+    FirebaseMessaging.onMessage.listen((message) {
+      unawaited(_showForeground(message).catchError((_) {}));
+    });
     // 백그라운드에서 알림을 탭해 앱을 연 경우.
     FirebaseMessaging.onMessageOpenedApp.listen((m) => _handleTap(m.data));
     // 종료 상태에서 알림 탭으로 앱이 실행된 경우 — 네비게이터가 준비된 뒤 이동.
-    final initial = await FirebaseMessaging.instance.getInitialMessage();
+    RemoteMessage? initial;
+    if (!kIsWeb) {
+      try {
+        initial = await FirebaseMessaging.instance.getInitialMessage().timeout(
+          const Duration(seconds: 5),
+        );
+      } catch (_) {}
+    }
     if (initial != null) {
-      WidgetsBinding.instance.addPostFrameCallback(
-        (_) => _handleTap(initial.data),
-      );
+      await _handleTap(initial.data);
     }
 
     // 이메일 인증까지 끝난 로그인 상태가 되면 그때 권한을 묻고 토큰을
@@ -95,15 +136,33 @@ class PushNotifications {
         return;
       }
       if (_permissionCheckedForUid == user.uid) return;
-      _permissionCheckedForUid = user.uid;
-      try {
-        await FirebaseMessaging.instance.requestPermission();
-      } catch (_) {
-        // 권한 요청 실패(웹·시뮬레이터 등)해도 앱은 계속 동작해야 한다.
+      if (kIsWeb) {
+        // 브라우저 권한 요청은 사용자가 알림 설정의 버튼을 누를 때 실행한다.
+        await registerToken();
+      } else {
+        await enableForCurrentUser();
       }
-      await registerToken();
+      _permissionCheckedForUid = user.uid;
     });
-    FirebaseMessaging.instance.onTokenRefresh.listen(_saveToken);
+    FirebaseMessaging.instance.onTokenRefresh.listen((token) async {
+      try {
+        await _saveToken(token);
+      } catch (_) {}
+    });
+    Timer.periodic(const Duration(minutes: 1), (_) {
+      unawaited(registerToken());
+      unawaited(_drainTaps());
+    });
+    final query = Uri.base.queryParameters;
+    if (kIsWeb && query['pushType'] != null) {
+      _pendingTaps.add({
+        'type': query['pushType'],
+        'chatId': query['pushChatId'],
+        'itemId': query['pushItemId'],
+      });
+    }
+    _initialized = true;
+    unawaited(_drainTaps());
   }
 
   /// 이번 세션에서 이미 권한을 묻고 토큰을 등록한 계정.
@@ -111,29 +170,73 @@ class PushNotifications {
 
   /// 현재 로그인 사용자의 기기 토큰을 fcmTokens/{uid}에 등록한다.
   static Future<void> registerToken() async {
-    if (kIsWeb) return;
+    if (_registeringToken) return;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || !user.emailVerified) return;
+    _registeringToken = true;
     try {
-      final token = await FirebaseMessaging.instance.getToken();
-      if (token != null) await _saveToken(token);
+      final settings = await FirebaseMessaging.instance
+          .getNotificationSettings();
+      if (settings.authorizationStatus != AuthorizationStatus.authorized &&
+          settings.authorizationStatus != AuthorizationStatus.provisional) {
+        deviceStatus.value = '이 기기의 알림이 꺼져 있어요. 기기·브라우저 설정에서 허용해주세요.';
+        return;
+      }
+      final token = await FirebaseMessaging.instance
+          .getToken(
+            vapidKey: kIsWeb && _webVapidKey.isNotEmpty ? _webVapidKey : null,
+          )
+          .timeout(const Duration(seconds: 15));
+      if (token != null && FirebaseAuth.instance.currentUser?.uid == user.uid) {
+        await _saveToken(token);
+        deviceStatus.value = '이 기기에서 알림을 받을 준비가 됐어요.';
+      }
     } catch (_) {
-      // 토큰 발급 실패(권한 거부 등)는 앱 동작을 막지 않는다.
+      deviceStatus.value = '알림 연결을 마치지 못했어요. 연결 확인 후 다시 눌러주세요.';
+    } finally {
+      _registeringToken = false;
     }
+  }
+
+  static Future<void> enableForCurrentUser() async {
+    try {
+      await FirebaseMessaging.instance.requestPermission();
+      await registerToken();
+    } catch (_) {
+      deviceStatus.value = '알림 권한을 확인하지 못했어요. 기기·브라우저 설정을 확인해주세요.';
+    }
+  }
+
+  static void markNavigationReady() {
+    _readyUid = FirebaseAuth.instance.currentUser?.uid;
+    unawaited(_drainTaps());
+    unawaited(registerToken());
   }
 
   static Future<void> _saveToken(String token) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
+    if (_savedToken == token && _savedUid == uid) return;
     // 한 계정이 여러 기기를 쓸 수 있으므로 배열로 모은다.
-    await FirebaseFirestore.instance.collection('fcmTokens').doc(uid).set({
-      'tokens': FieldValue.arrayUnion([token]),
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+    await FirebaseFirestore.instance
+        .collection('fcmTokens')
+        .doc(uid)
+        .set({
+          'tokens': FieldValue.arrayUnion([token]),
+          'updatedAt': FieldValue.serverTimestamp(),
+        }, SetOptions(merge: true))
+        .timeout(const Duration(seconds: 10));
+    _savedToken = token;
+    _savedUid = uid;
   }
 
   /// 로그아웃/회원탈퇴 시 signOut **이전에** 호출해, 이 기기 토큰을 지운다
   /// (안 지우면 다음에 이 기기를 쓰는 다른 계정으로 알림이 갈 수 있다).
   static Future<void> unregisterToken() async {
-    if (kIsWeb) return;
+    _readyUid = null;
+    _pendingTaps.clear();
+    _savedToken = null;
+    _savedUid = null;
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
     try {
@@ -151,6 +254,23 @@ class PushNotifications {
   static Future<void> _showForeground(RemoteMessage message) async {
     final notification = message.notification;
     if (notification == null) return;
+    if (kIsWeb) {
+      final context = rootNavigatorKey.currentContext;
+      if (context != null && context.mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(
+            content: Text(
+              '${notification.title ?? '새 알림'}: ${notification.body ?? ''}',
+            ),
+            action: SnackBarAction(
+              label: '보기',
+              onPressed: () => _handleTap(message.data),
+            ),
+          ),
+        );
+      }
+      return;
+    }
     await _local.show(
       id: notification.hashCode,
       title: notification.title,
@@ -181,11 +301,58 @@ class PushNotifications {
 
   /// 알림 데이터의 type/chatId/itemId를 보고 알맞은 화면으로 이동한다.
   static Future<void> _handleTap(Map<String, dynamic> data) async {
+    final key = '${data['type']}:${data['chatId']}:${data['itemId']}';
+    if (!_pendingTaps.any(
+      (entry) =>
+          '${entry['type']}:${entry['chatId']}:${entry['itemId']}' == key,
+    )) {
+      _pendingTaps.add(Map.of(data));
+    }
+    await _drainTaps();
+  }
+
+  static Future<void> _drainTaps() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (_routing ||
+        user == null ||
+        !user.emailVerified ||
+        _readyUid != user.uid ||
+        rootNavigatorKey.currentState == null) {
+      return;
+    }
+    _routing = true;
+    try {
+      while (_pendingTaps.isNotEmpty &&
+          FirebaseAuth.instance.currentUser?.uid == user.uid) {
+        final data = _pendingTaps.first;
+        try {
+          await _openNotification(data);
+          _pendingTaps.remove(data);
+        } on FirebaseException catch (error) {
+          if (error.code == 'permission-denied' || error.code == 'not-found') {
+            _pendingTaps.remove(data);
+          } else {
+            break;
+          }
+        } catch (_) {
+          break;
+        }
+      }
+    } finally {
+      _routing = false;
+    }
+  }
+
+  static Future<void> _openNotification(Map<String, dynamic> data) async {
+    final openingUid = FirebaseAuth.instance.currentUser?.uid;
     final nav = rootNavigatorKey.currentState;
     if (nav == null) return;
-    final type = data['type'] as String?;
-    final chatId = data['chatId'] as String?;
-    final itemId = data['itemId'] as String?;
+    final type = data['type'] is String ? data['type'] as String : null;
+    final chatId = data['chatId'] is String ? data['chatId'] as String : null;
+    final itemId = data['itemId'] is String ? data['itemId'] as String : null;
+    if ((chatId?.contains('/') ?? false) || (itemId?.contains('/') ?? false)) {
+      return;
+    }
 
     if ((type == 'chat_message' || type == 'chat_started') &&
         chatId != null &&
@@ -194,7 +361,8 @@ class PushNotifications {
       final chatDoc = await FirebaseFirestore.instance
           .collection('chats')
           .doc(chatId)
-          .get();
+          .get()
+          .timeout(const Duration(seconds: 10));
       if (!chatDoc.exists) return;
       final cdata = chatDoc.data()!;
       final participants = List<String>.from(
@@ -212,9 +380,11 @@ class PushNotifications {
         final profile = await FirebaseFirestore.instance
             .collection('userPublicProfiles')
             .doc(otherUid)
-            .get();
+            .get()
+            .timeout(const Duration(seconds: 10));
         otherNickname = profile.data()?['nickname'] as String? ?? '상대방';
       }
+      if (FirebaseAuth.instance.currentUser?.uid != openingUid) return;
       nav.push(
         MaterialPageRoute(
           builder: (context) => ChatScreen(
@@ -229,7 +399,11 @@ class PushNotifications {
     }
 
     if (itemId != null && itemId.isNotEmpty) {
-      final itemDoc = await itemsCollection.doc(itemId).get();
+      final itemDoc = await itemsCollection
+          .doc(itemId)
+          .get()
+          .timeout(const Duration(seconds: 10));
+      if (FirebaseAuth.instance.currentUser?.uid != openingUid) return;
       final context = rootNavigatorKey.currentContext;
       if (!itemDoc.exists || context == null || !context.mounted) return;
       showItemDetailSheet(context, LostFoundItem.fromDoc(itemDoc));

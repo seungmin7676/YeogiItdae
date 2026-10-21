@@ -70,12 +70,14 @@ class OnboardingScreen extends StatefulWidget {
   final VoidCallback onFinished;
   final String uid;
   final bool isReplay;
+  final Future<void> Function(String)? saveSeen;
 
   const OnboardingScreen({
     super.key,
     required this.uid,
     required this.onFinished,
     this.isReplay = false,
+    this.saveSeen,
   });
 
   @override
@@ -86,6 +88,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final _controller = PageController();
   int _index = 0;
   bool _dontShowAgain = true;
+  bool _finishing = false;
 
   @override
   void dispose() {
@@ -94,8 +97,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _finish() async {
-    if (!widget.isReplay && _dontShowAgain) {
-      await markOnboardingSeen(widget.uid);
+    if (_finishing) return;
+    _finishing = true;
+    try {
+      if (!widget.isReplay && _dontShowAgain) {
+        await (widget.saveSeen ?? markOnboardingSeen)(
+          widget.uid,
+        ).timeout(const Duration(seconds: 3));
+      }
+    } catch (_) {
+      // 안내 확인 여부를 저장하지 못해도 앱 진입을 막지 않는다.
     }
     if (!mounted) return;
     widget.onFinished();

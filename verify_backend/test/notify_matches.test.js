@@ -234,6 +234,23 @@ test('notify-matches: 글쓴이 본인에게는 보내지 않는다', async () =
   assert.equal((await notificationsFor(localId)).length, 0);
 });
 
+test('notify-matches: 처리 중인 전송을 완료로 오인하지 않고 재시도하게 한다', async () => {
+  const notify = require('../api/notify-matches');
+  const { idToken, localId } = await signUpVerifiedTestUser(admin, 'writer@hallym.ac.kr', 'password123');
+  await addItem('busy-item', { authorUid: localId, title: '검은 지갑' });
+  await setSavedSearch('sub', { keywords: ['지갑'] });
+  const crypto = require('node:crypto');
+  const key = crypto.createHash('sha256').update('keyword-match:busy-item:sub').digest('hex');
+  await admin.firestore().collection('keywordDeliveries').doc(key).set({
+    status: 'processing', lockedUntil: Date.now() + 60000,
+  });
+  const res = mockRes();
+  await notify(mockReq({ body: { itemId: 'busy-item' },
+    headers: { authorization: `Bearer ${idToken}` } }), res);
+  assert.equal(res.statusCode, 503);
+  assert.equal(res._json.retryable, true);
+});
+
 test('notify-matches: 숨김 처리된 글로는 알림을 보내지 않는다', async () => {
   const notify = require('../api/notify-matches');
   const { idToken, localId } = await signUpVerifiedTestUser(admin, 'poster7@hallym.ac.kr', 'password123');

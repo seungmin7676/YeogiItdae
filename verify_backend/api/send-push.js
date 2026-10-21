@@ -10,11 +10,12 @@ const {
 } = require('../_lib');
 const { sendPushToUser } = require('../_push');
 const { ADMIN_EMAILS, isAdminUser } = require('../_admin_access');
+const { classifyChatRejection } = require('../_chat_rejection');
 
 const CHAT_TYPES = new Set(['chat_started', 'chat_message']);
 const ADMIN_INBOX_TYPES = new Set(['report_received', 'bug_report']);
 const MODERATION_TYPES = new Set(['report_result', 'item_hidden', 'item_removed']);
-const CHAT_EVENT_MAX_AGE_MS = 5 * 60 * 1000;
+const CHAT_EVENT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function nonEmptyString(value) {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -33,18 +34,22 @@ async function reserveDelivery(admin, db, sourceKey, senderUid, recipientUid, ty
   const ref = db.collection('pushDeliveries').doc(deliveryId(sourceKey));
   return db.runTransaction(async (transaction) => {
     const existing = await transaction.get(ref);
-    if (existing.exists) return false;
-    transaction.create(ref, {
+    if (existing.exists && !['retry', 'processing'].includes(existing.data().status)) return 'duplicate';
+    if (existing.exists && existing.data().status === 'processing' &&
+        existing.data().lockedUntil > Date.now()) return 'busy';
+    transaction.set(ref, {
       sourceKey,
       senderUid,
       recipientUid,
       type,
+      status: 'processing',
+      lockedUntil: Date.now() + 60 * 1000,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       expiresAt: admin.firestore.Timestamp.fromMillis(
         Date.now() + 30 * 24 * 60 * 60 * 1000,
       ),
-    });
-    return true;
+    }, { merge: true });
+    return 'reserved';
   });
 }
 
@@ -197,6 +202,10 @@ module.exports = async (req, res) => {
   }))) return;
 
   const requestBody = req.body || {};
+  if (requestBody.action === 'check-chat-rejection') {
+    const localOnly = await classifyChatRejection(admin.firestore(), decoded.uid, requestBody);
+    return res.status(200).json({ ok: true, localOnly });
+  }
   const type = nonEmptyString(requestBody.type);
   if (!type) return res.status(400).json({ error: 'missing-type' });
 
@@ -219,7 +228,7 @@ module.exports = async (req, res) => {
 
   let reserved = false;
   if (authorized.sourceKey) {
-    reserved = await reserveDelivery(
+    const reservation = await reserveDelivery(
       admin,
       db,
       authorized.sourceKey,
@@ -227,7 +236,9 @@ module.exports = async (req, res) => {
       authorized.recipientUid,
       type,
     );
-    if (!reserved) return res.status(200).json({ ok: true, skipped: 'duplicate' });
+    if (reservation === 'duplicate') return res.status(200).json({ ok: true, skipped: 'duplicate' });
+    if (reservation === 'busy') return res.status(503).json({ error: 'delivery-in-progress', retryable: true });
+    reserved = true;
   }
 
   try {
@@ -238,14 +249,27 @@ module.exports = async (req, res) => {
       title: authorized.title,
       body: authorized.body,
       data: authorized.data,
+      deliveryKey: authorized.sourceKey ? deliveryId(authorized.sourceKey) : undefined,
     });
+
+    if (reserved) {
+      await db.collection('pushDeliveries').doc(deliveryId(authorized.sourceKey)).set({
+        status: result.retryable || result.failed > 0 ? 'retry' : 'complete',
+        lockedUntil: 0,
+      }, { merge: true });
+    }
+    if (result.retryable || result.failed > 0) {
+      return res.status(503).json({ ok: false, retryable: true, sent: result.sent, failed: result.failed });
+    }
 
     if (result.skipped) return res.status(200).json({ ok: true, skipped: result.skipped });
     return res.status(200).json({ ok: true, sent: result.sent, failed: result.failed });
   } catch (error) {
     // 발송 자체가 실패한 경우에는 예약을 풀어 네트워크 복구 후 재시도할 수 있게 한다.
     if (reserved) {
-      await db.collection('pushDeliveries').doc(deliveryId(authorized.sourceKey)).delete();
+      await db.collection('pushDeliveries').doc(deliveryId(authorized.sourceKey)).set({
+        status: 'retry', lockedUntil: 0,
+      }, { merge: true });
     }
     throw error;
   }

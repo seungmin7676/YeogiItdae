@@ -38,4 +38,42 @@ void main() {
       isEmpty,
     );
   });
+
+  test('차단된 사진은 서버 URL 대신 기기 내부 데이터로 보관한다', () async {
+    final store = LocalChatEchoStore();
+    const image = 'data:image/jpeg;base64,aGVsbG8=';
+    await store.append(
+      userUid: 'me',
+      chatId: 'chat-a',
+      echo: LocalChatEcho(
+        id: 'photo-1',
+        text: '',
+        sentAt: DateTime(2026, 10, 15),
+        imageDataUrl: image,
+      ),
+    );
+    final loaded = await store.load(userUid: 'me', chatId: 'chat-a');
+    expect(loaded.single.imageDataUrl, image);
+    expect(await store.load(userUid: 'other', chatId: 'chat-a'), isEmpty);
+  });
+
+  test('여러 로컬 사진을 동시에 저장해도 앞선 기록이 사라지지 않는다', () async {
+    final store = LocalChatEchoStore();
+    await Future.wait(
+      List.generate(
+        5,
+        (index) => store.append(
+          userUid: 'me',
+          chatId: 'chat-a',
+          echo: LocalChatEcho(
+            id: '$index',
+            text: '',
+            sentAt: DateTime(2026, 10, 15),
+            imageDataUrl: 'data:image/jpeg;base64,aGVsbG8=',
+          ),
+        ),
+      ),
+    );
+    expect(await store.load(userUid: 'me', chatId: 'chat-a'), hasLength(5));
+  });
 }
