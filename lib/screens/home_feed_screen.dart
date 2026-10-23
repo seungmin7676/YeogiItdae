@@ -44,6 +44,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
   List<String> _recentSearches = [];
   // 정렬 기준: false = 최신순, true = 조회순(인기순)
   bool _sortByPopular = false;
+  bool _ongoingOnly = false;
 
   int _limit = kInitialPageLimit;
   bool _isLoadingMore = false;
@@ -167,6 +168,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
     final searching = query.isNotEmpty;
     return items.where((item) {
       if (item.isHidden || blockedUids.contains(item.authorUid)) return false;
+      if (_ongoingOnly && item.resolved) return false;
       if (!searching) return true;
       if (!matchesSearchQuery(
         query,
@@ -197,6 +199,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
     location: _selectedLocation,
     sortByPopular: _sortByPopular,
     limit: _limit,
+    ongoingOnly: _ongoingOnly,
   );
 
   Widget _buildSearchResults(Set<String> blockedUids) {
@@ -208,6 +211,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
         location: _selectedLocation,
         sortByPopular: _sortByPopular,
         limit: null,
+        ongoingOnly: _ongoingOnly,
       ),
       search: _searchQuery,
     );
@@ -270,6 +274,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
         collection: itemsCollection,
         typeFilter: _selectedFilter,
         location: _selectedLocation,
+        ongoingOnly: _ongoingOnly,
       );
 
   Future<void> _pickLocation() async {
@@ -310,6 +315,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
       _selectedFilter = 0;
       _selectedCategory = '전체';
       _selectedLocation = _kAllLocations;
+      _ongoingOnly = false;
       _resetPaging();
     });
     _refreshCategoryCounts();
@@ -510,7 +516,8 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
                         final hasFilter =
                             _selectedCategory != '전체' ||
                             _selectedLocation != _kAllLocations ||
-                            _selectedFilter != 0;
+                            _selectedFilter != 0 ||
+                            _ongoingOnly;
                         if (isSearching) {
                           // 검색과 필터를 함께 걸어 0건이 된 경우, 진짜로 없는
                           // 것인지 필터 탓인지 알 수 없으므로 해제할 길을 준다.
@@ -597,6 +604,18 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: kPagePadding),
         children: [
+          SelectChip(
+            label: '진행 중만',
+            selected: _ongoingOnly,
+            onTap: () {
+              setState(() {
+                _ongoingOnly = !_ongoingOnly;
+                _resetPaging();
+              });
+              _refreshCategoryCounts();
+            },
+          ),
+          const SizedBox(width: 6),
           TriggerChip(
             label: locationActive ? _selectedLocation : '장소',
             icon: Icons.place_outlined,

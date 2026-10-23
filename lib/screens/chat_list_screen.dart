@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../services/error_messages.dart';
+import '../services/chat_presentation.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
 import '../widgets/confirm_dialog.dart';
@@ -12,6 +13,7 @@ import '../widgets/count_badge.dart';
 import '../widgets/feed_message.dart';
 import '../widgets/optimistic_hide_mixin.dart';
 import '../widgets/user_profile.dart';
+import '../widgets/item_card.dart';
 import 'chat_screen.dart';
 
 /// 화면: 내 채팅 목록
@@ -289,7 +291,8 @@ class _ChatListScreenState extends State<ChatListScreen>
                       final otherNickname =
                           nicknames[otherUid] as String? ?? '알 수 없음';
                       final lastMessage = data['lastMessage'] as String? ?? '';
-                      final itemTitle = data['itemTitle'] as String? ?? '';
+                      final itemTitle = (data['itemTitle'] as String? ?? '')
+                          .trim();
 
                       final unreadCountMap = Map<String, dynamic>.from(
                         data['unreadCount'] as Map? ?? {},
@@ -298,6 +301,11 @@ class _ChatListScreenState extends State<ChatListScreen>
                           (unreadCountMap[uid] as num?)?.toInt() ?? 0;
                       final isUnread = unreadCount > 0;
                       final chatId = visibleDocs[index].id;
+                      final lastMessageAt = data['lastMessageAt'] as Timestamp?;
+                      final status = chatItemStatus(
+                        resolutionStatus: data['resolutionStatus'] as String?,
+                        itemDeleted: data['itemDeleted'] == true,
+                      );
 
                       // v3 — 보더 카드 대신 풀블리드 행. 안읽음 상태는
                       // 옅은 틴트 배경 + 굵은 텍스트 + 숫자 배지로 표현한다.
@@ -325,6 +333,7 @@ class _ChatListScreenState extends State<ChatListScreen>
                               ? AppColors.primaryMuted
                               : Colors.transparent,
                           child: ListTile(
+                            isThreeLine: true,
                             contentPadding: const EdgeInsets.symmetric(
                               horizontal: kPagePadding,
                               vertical: 6,
@@ -338,6 +347,8 @@ class _ChatListScreenState extends State<ChatListScreen>
                             ),
                             title: Text(
                               otherNickname,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                               style: const TextStyle(
                                 fontWeight: FontWeight.w700,
                                 fontSize: 15,
@@ -346,27 +357,84 @@ class _ChatListScreenState extends State<ChatListScreen>
                               ),
                             ),
                             subtitle: Padding(
-                              padding: const EdgeInsets.only(top: 2),
-                              child: Text(
-                                lastMessage.isNotEmpty
-                                    ? lastMessage
-                                    : itemTitle,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: TextStyle(
-                                  fontSize: 13.5,
-                                  fontWeight: isUnread
-                                      ? FontWeight.w600
-                                      : FontWeight.normal,
-                                  color: isUnread
-                                      ? AppColors.ink
-                                      : AppColors.inkMuted,
-                                ),
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      const Icon(
+                                        Icons.inventory_2_outlined,
+                                        size: 13,
+                                        color: AppColors.primary,
+                                      ),
+                                      const SizedBox(width: 4),
+                                      Expanded(
+                                        child: Text(
+                                          itemTitle.isNotEmpty
+                                              ? itemTitle
+                                              : '게시글 정보 없음',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            fontSize: 12.5,
+                                            fontWeight: FontWeight.w600,
+                                            color: AppColors.primary,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 4),
+                                  SoftBadge(
+                                    label: status,
+                                    color: status == '전달 완료'
+                                        ? AppColors.found
+                                        : AppColors.inkMuted,
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    lastMessage.isNotEmpty
+                                        ? lastMessage
+                                        : '대화를 시작해보세요',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(
+                                      fontSize: 13.5,
+                                      fontWeight: isUnread
+                                          ? FontWeight.w600
+                                          : FontWeight.normal,
+                                      color: isUnread
+                                          ? AppColors.ink
+                                          : AppColors.inkMuted,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                            trailing: isUnread
-                                ? CountBadge(count: unreadCount)
-                                : null,
+                            trailing: lastMessageAt == null && !isUnread
+                                ? null
+                                : Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    crossAxisAlignment: CrossAxisAlignment.end,
+                                    children: [
+                                      if (lastMessageAt != null)
+                                        Text(
+                                          formatChatListTime(
+                                            lastMessageAt.toDate(),
+                                          ),
+                                          style: const TextStyle(
+                                            fontSize: 11,
+                                            color: AppColors.inkMuted,
+                                          ),
+                                        ),
+                                      if (isUnread) ...[
+                                        const SizedBox(height: 6),
+                                        CountBadge(count: unreadCount),
+                                      ],
+                                    ],
+                                  ),
                             onTap: () => Navigator.push(
                               context,
                               MaterialPageRoute(

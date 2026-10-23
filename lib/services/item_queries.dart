@@ -57,10 +57,12 @@ Query<Map<String, dynamic>> buildFeedQuery({
   required bool sortByPopular,
   required int? limit,
   String? searchToken,
+  bool ongoingOnly = false,
 }) {
   // Firestore 규칙도 같은 조건을 요구한다. 관리자에게 숨김 처리된 글이
   // 목록 쿼리에 섞여 내려오거나, 규칙 때문에 전체 쿼리가 실패하지 않게 한다.
   var query = collection.where('hidden', isEqualTo: false);
+  if (ongoingOnly) query = query.where('resolved', isEqualTo: false);
   if (searchToken != null) {
     query = query.where('searchTokens', arrayContains: searchToken);
   } else {
@@ -90,8 +92,10 @@ Query<Map<String, dynamic>> buildCategoryCountQuery({
   required Query<Map<String, dynamic>> collection,
   required int typeFilter,
   required String location,
+  bool ongoingOnly = false,
 }) {
   var query = collection.where('hidden', isEqualTo: false);
+  if (ongoingOnly) query = query.where('resolved', isEqualTo: false);
   switch (typeFilter) {
     case 1:
       query = query.where('type', isEqualTo: ItemType.found.name);

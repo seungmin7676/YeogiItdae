@@ -420,7 +420,9 @@ service cloud.firestore {
                       .diff(('unreadCount' in resource.data)
                             ? resource.data.unreadCount : {})
                       .affectedKeys().hasOnly([otherUid])
-                    && fieldChanged('lastMessage')
+                    // 같은 답장·같은 장수의 사진은 미리보기가 그대로일 수 있다.
+                    // 새 전송은 미리보기의 값 변경 대신 전송 시각 갱신으로 확인한다.
+                    && request.resource.data.lastMessage is string
                     && fieldChanged('lastMessageAt')
                     && request.resource.data.unreadCount[otherUid] is int
                     && request.resource.data.unreadCount[otherUid] > oldOtherCount

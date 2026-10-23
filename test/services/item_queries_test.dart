@@ -52,6 +52,44 @@ void main() {
   });
 
   group('buildFeedQuery', () {
+    test('진행 중 필터는 완료 글이 최신순 앞쪽을 채워도 첫 페이지를 채운다', () async {
+      await seed(category: '전자기기', count: 30);
+      await seed(category: '전자기기', count: 40, resolved: true, startIndex: 100);
+      for (final popular in [false, true]) {
+        final query = buildFeedQuery(
+          collection: items,
+          typeFilter: 1,
+          category: '전자기기',
+          location: '(1) 공학관',
+          sortByPopular: popular,
+          limit: null,
+          ongoingOnly: true,
+        );
+        final first = await query.limit(kInitialPageLimit).get();
+        expect(first.docs, hasLength(kInitialPageLimit));
+        expect(
+          first.docs.every((doc) => doc.data()['resolved'] == false),
+          isTrue,
+        );
+        final next = await query
+            .startAfterDocument(first.docs.last)
+            .limit(kInitialPageLimit)
+            .get();
+        expect(next.docs, hasLength(10));
+        expect(
+          {...first.docs, ...next.docs}.map((doc) => doc.id).toSet(),
+          hasLength(30),
+        );
+      }
+      final counts = await buildCategoryCountQuery(
+        collection: items,
+        typeFilter: 1,
+        location: '(1) 공학관',
+        ongoingOnly: true,
+      ).where('category', isEqualTo: '전자기기').get();
+      expect(counts.docs, hasLength(30));
+    });
+
     test('관리자가 숨긴 글은 피드에서 제외된다', () async {
       await seed(category: '가방', count: 2);
       await items.add({
