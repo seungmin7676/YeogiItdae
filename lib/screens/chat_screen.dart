@@ -11,6 +11,7 @@ import 'package:image_picker/image_picker.dart';
 import '../models/lost_found_item.dart';
 import '../services/analytics_service.dart';
 import '../services/chat_actions.dart';
+import '../services/chat_presentation.dart';
 import '../services/cloudinary_service.dart';
 import '../services/error_messages.dart';
 import '../services/media_deletion.dart';
@@ -23,6 +24,7 @@ import '../widgets/confirm_dialog.dart';
 import '../widgets/feed_message.dart';
 import '../widgets/image_source_sheet.dart';
 import '../widgets/user_profile.dart';
+import '../widgets/chat_item_card.dart';
 import '../widgets/safety_notice.dart';
 import 'item_detail_sheet.dart';
 
@@ -63,6 +65,9 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   // 스크롤을 건드리지 않아, 이전 대화를 올려 보던 사용자가 아래로 튕겨
   // 내려가지 않게 한다.
   int _lastMessageCount = -1;
+  final ChatTimelineTracker _timelineTracker = ChatTimelineTracker();
+  String? _linkedItemId;
+  Future<LostFoundItem?>? _linkedItemFuture;
   final Map<String, QueryDocumentSnapshot<Map<String, dynamic>>>
   _messageDocuments = {};
   bool _hasMoreHistory = false;
@@ -104,6 +109,8 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _scrollController.addListener(_onChatScroll);
+    _loadLinkedItem(widget.itemId);
     _markAsRead();
     _loadLocalTextEchoes();
     _chatSub = _chatRef
@@ -115,6 +122,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
               _chatLoaded = true;
               _chatFailed = false;
               _chatData = snap.data();
+              _loadLinkedItem(_chatData?['itemId'] as String? ?? widget.itemId);
               if (shouldStartMessagesStream(
                 chatExists: snap.exists,
                 hasPendingWrites: snap.metadata.hasPendingWrites,
@@ -219,7 +227,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         .snapshots()
         .listen(
           (_) {
-            _markAsRead();
+            if (_isNearLatestMessage) _markAsRead();
           },
           // 읽음 갱신용 보조 구독의 오류는 대화 본문에 노출하지 않는다.
           onError: (_) {},
@@ -299,13 +307,58 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  bool get _isNearLatestMessage =>
+      !_scrollController.hasClients || _scrollController.offset < 120;
+
+  void _onChatScroll() {
+    if (!_isNearLatestMessage || _timelineTracker.pendingCount == 0) return;
+    setState(_timelineTracker.acknowledge);
+    unawaited(_markAsRead());
+  }
+
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
+      if (mounted && _scrollController.hasClients) {
         _scrollController.jumpTo(_scrollController.position.minScrollExtent);
+        _onChatScroll();
       }
     });
   }
+
+  void _loadLinkedItem(String? itemId) {
+    if (itemId == null || itemId.isEmpty || itemId == _linkedItemId) return;
+    _linkedItemId = itemId;
+    _linkedItemFuture = itemsCollection
+        .doc(itemId)
+        .get()
+        .timeout(const Duration(seconds: 10))
+        .then((doc) => doc.exists ? LostFoundItem.fromDoc(doc) : null);
+  }
+
+  Widget _buildLinkedItemCard() => FutureBuilder<LostFoundItem?>(
+    future: _linkedItemFuture,
+    builder: (context, snapshot) {
+      final item = snapshot.data;
+      final missing =
+          _linkedItemFuture != null &&
+          snapshot.connectionState == ConnectionState.done &&
+          !snapshot.hasError &&
+          item == null;
+      final deleted = _chatData?['itemDeleted'] == true || missing;
+      final title =
+          item?.title ?? _chatData?['itemTitle'] as String? ?? widget.itemTitle;
+      return ChatItemCard(
+        title: title,
+        imageUrl: item?.imageUrls.firstOrNull,
+        status: chatItemStatus(
+          resolutionStatus: _chatData?['resolutionStatus'] as String?,
+          itemDeleted: deleted,
+          itemResolved: item?.resolved == true,
+        ),
+        onOpen: deleted ? null : _openItemDetail,
+      );
+    },
+  );
 
   @override
   void dispose() {
@@ -683,14 +736,26 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       );
     }
 
-    if (entries.length != _lastMessageCount) {
-      _lastMessageCount = entries.length;
-      final nearBottom =
-          !_scrollController.hasClients || _scrollController.offset < 120;
-      if (!_preserveHistoryScroll && nearBottom) _scrollToBottom();
+    final nearBottom = _isNearLatestMessage;
+    final shouldScroll = _timelineTracker.observe(
+      documents
+          .where((doc) => !myBlockedUids.contains(doc.data()['senderUid']))
+          .map(
+            (doc) => ChatTimelineMessage(
+              id: doc.id,
+              isMine: doc.data()['senderUid'] == myUid,
+              sentAt: (doc.data()['createdAt'] as Timestamp?)?.toDate(),
+            ),
+          ),
+      nearBottom: nearBottom,
+    );
+    if (!_preserveHistoryScroll &&
+        (shouldScroll || (nearBottom && entries.length != _lastMessageCount))) {
+      _scrollToBottom();
     }
+    _lastMessageCount = entries.length;
     _preserveHistoryScroll = false;
-    return ListView.builder(
+    final messageList = ListView.builder(
       controller: _scrollController,
       reverse: true,
       padding: const EdgeInsets.all(16),
@@ -708,6 +773,33 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         final isMine = entry.senderUid == myUid;
         final isImage = entry.type == 'image';
         final createdAt = entry.createdAt;
+        final chronologicalIndex = entries.length - 1 - index;
+        final previousTime = chronologicalIndex == 0
+            ? null
+            : entries[chronologicalIndex - 1].createdAt;
+        final showDate =
+            createdAt != null &&
+            (previousTime == null || !isSameChatDay(previousTime, createdAt));
+        Widget withDate(Widget bubble) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (showDate)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Center(
+                  child: Text(
+                    formatChatDay(createdAt),
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.inkMuted,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
+            bubble,
+          ],
+        );
         // 로컬 전용 말풍선은 서버에 저장되지 않으므로 항상 안읽음 '1'을
         // 유지한다. 정상 메시지는 상대방의 마지막 읽음 시각과 비교한다.
         final showUnread =
@@ -718,41 +810,43 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                     !otherLastReadAt.toDate().isBefore(createdAt)));
 
         if (isImage) {
-          return Align(
-            alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
-            child: _withMeta(
-              isMine: isMine,
-              showUnread: showUnread,
-              createdAt: createdAt,
-              bubble: GestureDetector(
-                onTap: () => _openImageViewer(entry.imageUrl),
-                child: Container(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  constraints: BoxConstraints(
-                    maxWidth: MediaQuery.of(context).size.width * 0.55,
-                  ),
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(kRadiusLg),
-                    child: entry.imageUrl.startsWith('data:image/')
-                        ? Image.memory(
-                            Uri.parse(entry.imageUrl).data!.contentAsBytes(),
-                            fit: BoxFit.cover,
-                            cacheWidth: bubbleDecodeWidth,
-                          )
-                        : CachedNetworkImage(
-                            imageUrl: entry.imageUrl,
-                            fit: BoxFit.cover,
-                            memCacheWidth: bubbleDecodeWidth,
-                            errorWidget: (context, url, error) => Container(
-                              width: 160,
-                              height: 160,
-                              color: AppColors.surfaceAlt,
-                              child: const Icon(
-                                Icons.broken_image_outlined,
-                                color: AppColors.inkFaint,
+          return withDate(
+            Align(
+              alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
+              child: _withMeta(
+                isMine: isMine,
+                showUnread: showUnread,
+                createdAt: createdAt,
+                bubble: GestureDetector(
+                  onTap: () => _openImageViewer(entry.imageUrl),
+                  child: Container(
+                    margin: const EdgeInsets.only(bottom: 8),
+                    constraints: BoxConstraints(
+                      maxWidth: MediaQuery.of(context).size.width * 0.55,
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(kRadiusLg),
+                      child: entry.imageUrl.startsWith('data:image/')
+                          ? Image.memory(
+                              Uri.parse(entry.imageUrl).data!.contentAsBytes(),
+                              fit: BoxFit.cover,
+                              cacheWidth: bubbleDecodeWidth,
+                            )
+                          : CachedNetworkImage(
+                              imageUrl: entry.imageUrl,
+                              fit: BoxFit.cover,
+                              memCacheWidth: bubbleDecodeWidth,
+                              errorWidget: (context, url, error) => Container(
+                                width: 160,
+                                height: 160,
+                                color: AppColors.surfaceAlt,
+                                child: const Icon(
+                                  Icons.broken_image_outlined,
+                                  color: AppColors.inkFaint,
+                                ),
                               ),
                             ),
-                          ),
+                    ),
                   ),
                 ),
               ),
@@ -760,36 +854,38 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           );
         }
 
-        return Align(
-          alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
-          child: _withMeta(
-            isMine: isMine,
-            showUnread: showUnread,
-            createdAt: createdAt,
-            bubble: GestureDetector(
-              onLongPress: () => _copyMessageText(entry.text),
-              child: Container(
-                margin: const EdgeInsets.only(bottom: 8),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 10,
-                ),
-                constraints: BoxConstraints(
-                  maxWidth: MediaQuery.of(context).size.width * 0.7,
-                ),
-                decoration: BoxDecoration(
-                  color: isMine ? AppColors.primary : AppColors.surfaceAlt,
-                  borderRadius: BorderRadius.only(
-                    topLeft: const Radius.circular(kRadiusLg),
-                    topRight: const Radius.circular(kRadiusLg),
-                    bottomLeft: Radius.circular(isMine ? kRadiusLg : 4),
-                    bottomRight: Radius.circular(isMine ? 4 : kRadiusLg),
+        return withDate(
+          Align(
+            alignment: isMine ? Alignment.centerRight : Alignment.centerLeft,
+            child: _withMeta(
+              isMine: isMine,
+              showUnread: showUnread,
+              createdAt: createdAt,
+              bubble: GestureDetector(
+                onLongPress: () => _copyMessageText(entry.text),
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
                   ),
-                ),
-                child: Text(
-                  entry.text,
-                  style: TextStyle(
-                    color: isMine ? Colors.white : AppColors.ink,
+                  constraints: BoxConstraints(
+                    maxWidth: MediaQuery.of(context).size.width * 0.7,
+                  ),
+                  decoration: BoxDecoration(
+                    color: isMine ? AppColors.primary : AppColors.surfaceAlt,
+                    borderRadius: BorderRadius.only(
+                      topLeft: const Radius.circular(kRadiusLg),
+                      topRight: const Radius.circular(kRadiusLg),
+                      bottomLeft: Radius.circular(isMine ? kRadiusLg : 4),
+                      bottomRight: Radius.circular(isMine ? 4 : kRadiusLg),
+                    ),
+                  ),
+                  child: Text(
+                    entry.text,
+                    style: TextStyle(
+                      color: isMine ? Colors.white : AppColors.ink,
+                    ),
                   ),
                 ),
               ),
@@ -797,6 +893,27 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           ),
         );
       },
+    );
+    final pendingCount = _timelineTracker.pendingCount;
+    return Stack(
+      children: [
+        Positioned.fill(child: messageList),
+        if (pendingCount > 0)
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: 12,
+            child: Center(
+              child: ElevatedButton.icon(
+                onPressed: _scrollToBottom,
+                icon: const Icon(Icons.arrow_downward_rounded, size: 18),
+                label: Text(
+                  '새 메시지 ${pendingCount > 99 ? '99+' : pendingCount}개',
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 
@@ -1227,15 +1344,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
                               ),
                             );
                           }
-                          return Text(
-                            widget.itemTitle,
-                            maxLines: 1,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.inkMuted,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          );
+                          return const SizedBox.shrink();
                         },
                       ),
                     ],
@@ -1296,6 +1405,7 @@ class _ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       ),
       body: Column(
         children: [
+          _buildLinkedItemCard(),
           if (_isSendingText)
             const _ChatBanner(
               icon: Icons.hourglass_empty_rounded,

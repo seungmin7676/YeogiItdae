@@ -27,6 +27,7 @@ const {
   where,
   writeBatch,
   serverTimestamp,
+  increment,
 } = require('firebase/firestore');
 
 const PROJECT_ID = 'demo-yeogi-itdae';
@@ -674,6 +675,89 @@ test('chats/messages: 참여자는 본인 명의로 메시지를 보낼 수 있�
   );
 });
 
+test('chats/messages: 관리자와 일반 사용자가 같은 문구로 양방향 답장할 수 있다', async () => {
+  const chatId = await seedChat('admin', 'student');
+  const admin = adminUser().firestore();
+  const student = hallymUser('student').firestore();
+
+  await assertSucceeds(sendChatBatch(admin, chatId, 'admin', 'student', '안녕'));
+  await assertSucceeds(sendChatBatch(student, chatId, 'student', 'admin', '안녕'));
+  await assertSucceeds(sendChatBatch(admin, chatId, 'admin', 'student', '안녕'));
+
+  const messages = await getDocs(collection(student, 'chats', chatId, 'messages'));
+  assert.equal(messages.size, 3);
+  const chat = await getDoc(doc(student, 'chats', chatId));
+  assert.equal(chat.data().lastMessage, '안녕');
+  assert.deepEqual(chat.data().unreadCount, { admin: 1, student: 2 });
+});
+
+test('chats/messages: 같은 발신자가 동일한 텍스트를 연속 전송할 수 있다', async () => {
+  const chatId = await seedChat('alice', 'bob');
+  const db = hallymUser('alice').firestore();
+
+  await assertSucceeds(sendChatBatch(db, chatId, 'alice', 'bob', '확인했습니다'));
+  await assertSucceeds(sendChatBatch(db, chatId, 'alice', 'bob', '확인했습니다'));
+
+  const messages = await getDocs(collection(db, 'chats', chatId, 'messages'));
+  assert.equal(messages.size, 2);
+  const chat = await getDoc(doc(db, 'chats', chatId));
+  assert.equal(chat.data().unreadCount.bob, 2);
+});
+
+for (const imageCount of [1, 5]) {
+  test(`chats/messages: 사진 ${imageCount}장 묶음을 연속 전송할 수 있다`, async () => {
+    const chatId = await seedChat('alice', 'bob');
+    const db = hallymUser('alice').firestore();
+    const images = Array.from({ length: imageCount }, (_, i) =>
+      `https://res.cloudinary.com/test/image/upload/photo-${i}.jpg`);
+    const preview = imageCount > 1
+      ? `사진 ${imageCount}장을 보냈습니다`
+      : '사진을 보냈습니다';
+
+    await assertSucceeds(sendChatBatch(db, chatId, 'alice', 'bob', preview, images));
+    await assertSucceeds(sendChatBatch(db, chatId, 'alice', 'bob', preview, images));
+
+    const messages = await getDocs(collection(db, 'chats', chatId, 'messages'));
+    assert.equal(messages.size, imageCount * 2);
+    const chat = await getDoc(doc(db, 'chats', chatId));
+    assert.equal(chat.data().unreadCount.bob, imageCount * 2);
+  });
+}
+
+test('chats: 같은 미리보기여도 전송 시각 갱신 없는 안읽음 수 증가는 거부된다', async () => {
+  const oldTime = new Date(0);
+  const chatId = await seedChat('alice', 'bob', {
+    lastMessage: '안녕', lastMessageAt: oldTime, unreadCount: { bob: 1 },
+  });
+  const db = hallymUser('alice').firestore();
+  const chat = doc(db, 'chats', chatId);
+
+  await assertFails(updateDoc(chat, { 'unreadCount.bob': increment(1) }));
+  await assertFails(updateDoc(chat, {
+    lastMessage: '안녕', lastMessageAt: oldTime, 'unreadCount.bob': increment(1),
+  }));
+  await assertFails(updateDoc(chat, {
+    lastMessage: '안녕', lastMessageAt: serverTimestamp(),
+    'unreadCount.bob': increment(6),
+  }));
+  await assertFails(updateDoc(chat, {
+    lastMessage: '안녕', lastMessageAt: serverTimestamp(), 'unreadCount.bob': 0,
+  }));
+});
+
+test('chats/messages: 같은 문구의 답장도 차단 관계에서는 거부된다', async () => {
+  const chatId = await seedChat('admin', 'student', {
+    lastMessage: '안녕', lastMessageAt: new Date(0),
+  });
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), 'blocks', 'admin'), {
+      blockedUsers: { student: '테스트 학생' },
+    });
+  });
+  const student = hallymUser('student').firestore();
+  await assertFails(sendChatBatch(student, chatId, 'student', 'admin', '안녕'));
+});
+
 test('chats/messages: 차단 이후에는 새 메시지와 lastMessage 갱신이 서버에서 거부된다', async () => {
   const chatId = await seedChat('alice', 'bob');
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
@@ -1217,6 +1301,28 @@ async function seedItem(authorUid, overrides = {}) {
     itemId = ref.id;
   });
   return itemId;
+}
+
+/** 앱과 동일하게 메시지 기록·미리보기·읽음 시각·안읽음 수를 원자적으로 보낸다. */
+function sendChatBatch(db, chatId, senderUid, recipientUid, preview, imageUrls = []) {
+  const chat = doc(db, 'chats', chatId);
+  const batch = writeBatch(db);
+  const messages = imageUrls.length
+    ? imageUrls.map((imageUrl) => ({ type: 'image', imageUrl }))
+    : [{ type: 'text', text: preview }];
+  for (const message of messages) {
+    batch.set(doc(collection(chat, 'messages')), {
+      senderUid, ...message, createdAt: serverTimestamp(),
+    });
+  }
+  batch.update(chat, {
+    lastMessage: preview,
+    lastMessageAt: serverTimestamp(),
+    [`lastReadAt.${senderUid}`]: serverTimestamp(),
+    [`unreadCount.${recipientUid}`]: increment(messages.length),
+    ...(imageUrls.length ? {} : { [`typing.${senderUid}`]: false }),
+  });
+  return batch.commit();
 }
 
 /** 규칙을 우회해 두 참여자의 chats 문서를 심고 문서 id를 반환한다. */

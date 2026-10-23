@@ -69,7 +69,6 @@ class ItemCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final metaParts = [
-      item.location,
       item.authorNickname,
       if (item.createdAt != null) relativeTime(item.createdAt),
       if (item.viewCount > 0) '조회 ${item.viewCount}',
@@ -149,15 +148,44 @@ class ItemCard extends StatelessWidget {
                           overflow: TextOverflow.ellipsis,
                         ),
                         const SizedBox(height: 6),
-                        Text(
-                          metaParts.join(' · '),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 12.5,
-                            color: AppColors.inkFaint,
-                            fontWeight: FontWeight.w500,
-                          ),
+                        Row(
+                          children: [
+                            const Icon(
+                              Icons.place_outlined,
+                              size: 13,
+                              color: AppColors.inkMuted,
+                            ),
+                            const SizedBox(width: 3),
+                            Expanded(
+                              child: Text(
+                                item.location,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 12.5,
+                                  color: AppColors.inkMuted,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 2,
+                          children: [
+                            for (final part in metaParts)
+                              Text(
+                                part,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontSize: 12.5,
+                                  color: AppColors.inkFaint,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                          ],
                         ),
                       ],
                     ),

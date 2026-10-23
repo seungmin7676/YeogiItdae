@@ -3,8 +3,40 @@ import 'package:fake_cloud_firestore/fake_cloud_firestore.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:latte/services/chat_actions.dart';
 import 'package:latte/services/feed_search.dart';
+import 'package:latte/services/item_queries.dart';
 
 void main() {
+  test('진행 중 검색은 완료 글을 제외하고 여러 페이지의 결과를 누락 없이 찾는다', () async {
+    final db = FakeFirebaseFirestore();
+    for (var index = 0; index < 165; index++) {
+      await db.collection('items').doc('$index').set({
+        'title': '지갑 $index',
+        'hidden': false,
+        'resolved': index >= 45,
+        'createdAt': Timestamp.fromMillisecondsSinceEpoch(index),
+      });
+    }
+    final pager = FeedSearchPager(
+      query: buildFeedQuery(
+        collection: db.collection('items'),
+        typeFilter: 0,
+        category: kAllFilterLabel,
+        location: kAllFilterLabel,
+        sortByPopular: false,
+        limit: null,
+        ongoingOnly: true,
+      ),
+      search: '지갑',
+    );
+    expect(await pager.loadNext(), hasLength(20));
+    expect(await pager.loadNext(), hasLength(40));
+    final all = await pager.loadNext();
+    expect(all, hasLength(45));
+    expect(all.every((item) => !item.resolved), isTrue);
+    expect(all.map((item) => item.id).toSet(), hasLength(45));
+    expect(pager.hasMore, isFalse);
+  });
+
   test('한 글자와 설명 500자 이후 단어도 첫 100개 밖의 옛 글에서 찾는다', () async {
     final db = FakeFirebaseFirestore();
     for (var index = 0; index < 145; index++) {
