@@ -73,6 +73,21 @@ flutter build web --release --dart-define=APP_CHECK_ENABLED=false
 `web/firebase-messaging-sw.js`도 웹 빌드와 함께 제공해야 합니다.
 웹 빌드 성공은 실제 브라우저의 백그라운드 알림 수신을 검증한 것과 다릅니다.
 
+### 공개 웹 배포
+
+공개 주소는 **https://yeogi-itdae.web.app**입니다.
+기존 `yeogi-itdae` 프로젝트의 Firebase Hosting을 사용하며, 로그인 계정과 데이터는 Android 앱과 공유합니다.
+
+```powershell
+flutter build web --release --dart-define=APP_CHECK_ENABLED=false
+firebase deploy --only hosting --project yeogi-itdae
+```
+
+빌드 결과인 `build/web`만 업로드합니다. 소스, 서버 코드, 로컬 설정 파일은 공개 디렉터리에 넣지 않습니다.
+`firebase.json`에는 SPA 새로고침용 rewrite와 재배포 시 갱신을 확인하는 캐시 헤더를 설정했습니다.
+호스팅만 배포하므로 이 명령으로 Firestore 규칙·인덱스나 Vercel 백엔드를 변경하지 않습니다.
+Firebase Authentication의 허용 도메인에는 `yeogi-itdae.web.app`과 `yeogi-itdae.firebaseapp.com`이 등록되어 있습니다.
+
 ## v1.0.3 서버 반영과 동작 특성
 
 새 앱보다 `verify_backend`를 먼저 배포해야 합니다. 차단으로 인한 전송 거부 판별과

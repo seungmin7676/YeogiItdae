@@ -13,9 +13,17 @@
 | 주인을 모르는 물건을 주웠어요 | **습득물** 글을 올려 주인을 찾아요. |
 | 내 물건 같은 글을 발견했어요 | 게시글의 **채팅하기**를 눌러 글쓴이에게 연락해요. |
 
-[Android 앱 다운로드](https://github.com/seungmin7676/YeogiItdae/releases/latest) · [버전별 변경 내역](https://github.com/seungmin7676/YeogiItdae/releases) · [오류 제보](https://github.com/seungmin7676/YeogiItdae/issues)
+[웹에서 바로 사용하기](https://yeogi-itdae.web.app) · [Android 앱 다운로드](https://github.com/seungmin7676/YeogiItdae/releases/latest) · [버전별 변경 내역](https://github.com/seungmin7676/YeogiItdae/releases) · [오류 제보](https://github.com/seungmin7676/YeogiItdae/issues)
 
-## 설치하고 시작하기
+## 설치 없이 웹에서 시작하기
+
+PC나 휴대폰 브라우저에서 **[yeogi-itdae.web.app](https://yeogi-itdae.web.app)**을 열어 주세요.
+기존 앱 계정으로 로그인할 수 있고, 게시글·찜·채팅은 앱과 함께 사용할 수 있어요.
+처음이라면 회원가입 후 학교 이메일(`@hallym.ac.kr`) 인증을 진행해 주세요.
+
+웹 알림은 브라우저가 지원하는 환경에서 **마이페이지 → 알림 설정**을 통해 허용할 수 있어요.
+
+## Android 앱 설치하고 시작하기
 
 **Android 7.0 이상인 휴대폰과 한림대학교 이메일(`@hallym.ac.kr`)이 필요해요.**
 현재 앱 설치 파일은 GitHub에서 제공하며, iPhone용 설치 파일은 제공하지 않습니다.
