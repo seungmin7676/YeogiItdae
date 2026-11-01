@@ -13,6 +13,7 @@ import '../widgets/confirm_dialog.dart';
 import '../widgets/feed_message.dart';
 import '../widgets/item_card.dart';
 import '../widgets/skeleton.dart';
+import '../widgets/auto_hide_header.dart';
 import 'item_detail_sheet.dart';
 import 'register_item_screen.dart';
 
@@ -242,8 +243,10 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
                 const SizedBox(width: 8),
               ],
       ),
-      body: Column(
-        children: [
+      body: AutoHideHeader(
+        header: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(
               kPagePadding,
@@ -261,8 +264,9 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
             ),
           ),
           const Divider(),
-          Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          ],
+        ),
+        body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: _query(uid).snapshots(),
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
@@ -367,8 +371,6 @@ class _MyPostsScreenState extends State<MyPostsScreen> {
                 );
               },
             ),
-          ),
-        ],
       ),
       bottomNavigationBar: _selectionMode && _selectedIds.isNotEmpty
           ? Container(

@@ -8,6 +8,7 @@ import '../services/error_messages.dart';
 import '../services/chat_presentation.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_ui.dart';
+import '../widgets/auto_hide_header.dart';
 import '../widgets/confirm_dialog.dart';
 import '../widgets/count_badge.dart';
 import '../widgets/feed_message.dart';
@@ -50,8 +51,17 @@ class ChatListScreen extends StatefulWidget {
 class _ChatListScreenState extends State<ChatListScreen>
     with OptimisticHideMixin<ChatListScreen> {
   final _searchController = TextEditingController();
+  final _searchFocusNode = FocusNode();
   String _searchQuery = '';
   Timer? _searchDebounce;
+
+  @override
+  void initState() {
+    super.initState();
+    _searchFocusNode.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
 
   @override
   void didUpdateWidget(covariant ChatListScreen oldWidget) {
@@ -79,6 +89,7 @@ class _ChatListScreenState extends State<ChatListScreen>
   void dispose() {
     _searchDebounce?.cancel();
     _searchController.dispose();
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
@@ -147,8 +158,11 @@ class _ChatListScreenState extends State<ChatListScreen>
     return Scaffold(
       backgroundColor: AppColors.bg,
       appBar: AppBar(title: const Text('채팅')),
-      body: Column(
-        children: [
+      body: AutoHideHeader(
+        alwaysVisible: _searchFocusNode.hasFocus,
+        header: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(
               kPagePadding,
@@ -158,6 +172,7 @@ class _ChatListScreenState extends State<ChatListScreen>
             ),
             child: TextField(
               controller: _searchController,
+              focusNode: _searchFocusNode,
               onChanged: _onSearchChanged,
               decoration: appSearchDecoration(
                 '상대방 닉네임이나 글 제목으로 검색',
@@ -180,8 +195,9 @@ class _ChatListScreenState extends State<ChatListScreen>
             ),
           ),
           const Divider(),
-          Expanded(
-            child: Builder(
+          ],
+        ),
+        body: Builder(
               builder: (context) {
                 if (widget.hasError) {
                   return const FeedMessage(
@@ -454,8 +470,6 @@ class _ChatListScreenState extends State<ChatListScreen>
                 );
               },
             ),
-          ),
-        ],
       ),
     );
   }
