@@ -25,6 +25,14 @@ if (releaseRequested && !keystorePropertiesFile.exists()) {
             "to android/key.properties and point it to the upload keystore."
     )
 }
+// 플러그인 등록 파일이 없으면 APK는 빌드되더라도 Firebase 초기화에 실패한다.
+// pub get이 중간에 실패한 뒤 --no-pub으로 빌드하는 경우를 막는다.
+if (releaseRequested && !file("src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java").isFile) {
+    throw GradleException(
+        "Flutter plugin registration is missing. Run flutter pub get successfully " +
+            "and verify GeneratedPluginRegistrant.java exists before building."
+    )
+}
 
 android {
     namespace = "io.github.seungmin7676.yeogiitdae"
