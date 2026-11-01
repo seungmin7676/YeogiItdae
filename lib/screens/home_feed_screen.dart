@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/error_messages.dart';
@@ -47,6 +46,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
   bool _sortByPopular = false;
   bool _ongoingOnly = false;
   bool _feedHeaderVisible = true;
+  double _feedHeaderScrollDistance = 0;
 
   int _limit = kInitialPageLimit;
   bool _isLoadingMore = false;
@@ -351,6 +351,45 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
     }
   }
 
+  bool _handleFeedScroll(ScrollNotification notification) {
+    if (notification.depth != 0 ||
+        notification.metrics.axis != Axis.vertical ||
+        _searchFocusNode.hasFocus) {
+      _feedHeaderScrollDistance = 0;
+      return false;
+    }
+
+    if (notification.metrics.pixels <= notification.metrics.minScrollExtent) {
+      _setFeedHeaderVisible(true);
+      return false;
+    }
+
+    if (notification is! ScrollUpdateNotification) return false;
+
+    final delta = notification.scrollDelta;
+    if (delta == null || delta == 0) return false;
+
+    if ((_feedHeaderScrollDistance > 0 && delta < 0) ||
+        (_feedHeaderScrollDistance < 0 && delta > 0)) {
+      _feedHeaderScrollDistance = 0;
+    }
+    _feedHeaderScrollDistance += delta;
+
+    if (_feedHeaderVisible && _feedHeaderScrollDistance >= 44) {
+      _setFeedHeaderVisible(false);
+    } else if (!_feedHeaderVisible && _feedHeaderScrollDistance <= -28) {
+      _setFeedHeaderVisible(true);
+    }
+
+    return false;
+  }
+
+  void _setFeedHeaderVisible(bool visible) {
+    _feedHeaderScrollDistance = 0;
+    if (_feedHeaderVisible == visible || !mounted) return;
+    setState(() => _feedHeaderVisible = visible);
+  }
+
   @override
   Widget build(BuildContext context) {
     final blockedUids = AppUserData.of(context).blockedUids;
@@ -362,136 +401,141 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
         ),
         actions: const [NotificationBellButton(), SizedBox(width: 10)],
       ),
-      body: NotificationListener<UserScrollNotification>(
-        onNotification: (notification) {
-          if (_searchFocusNode.hasFocus ||
-              notification.metrics.axis != Axis.vertical) {
-            return false;
-          }
-
-          if (notification.direction == ScrollDirection.reverse &&
-              _feedHeaderVisible) {
-            setState(() => _feedHeaderVisible = false);
-          } else if (notification.direction == ScrollDirection.forward &&
-              !_feedHeaderVisible) {
-            setState(() => _feedHeaderVisible = true);
-          }
-          return false;
-        },
+      body: NotificationListener<ScrollNotification>(
+        onNotification: _handleFeedScroll,
         child: Column(
           children: [
-            AnimatedSize(
-              duration: const Duration(milliseconds: 200),
-              curve: Curves.easeOutCubic,
-              alignment: Alignment.topCenter,
-              child: _feedHeaderVisible
-                  ? Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(
-                            kPagePadding,
-                            12,
-                            kPagePadding,
-                            10,
-                          ),
-                          child: TextField(
-                            controller: _searchController,
-                            focusNode: _searchFocusNode,
-                            onChanged: _onSearchChanged,
-                            onSubmitted: (_) => _saveCurrentSearch(),
-                            decoration: appSearchDecoration(
-                              '어떤 물건을 찾고 계세요?',
-                              suffixIcon: _searchController.text.isEmpty
-                                  ? null
-                                  : IconButton(
-                                      icon: const Icon(
-                                        Icons.close_rounded,
-                                        color: AppColors.inkMuted,
-                                        size: 18,
-                                      ),
-                                      tooltip: '검색어 지우기',
-                                      onPressed: () {
-                                        _searchDebounce?.cancel();
-                                        _searchController.clear();
-                                        setState(() {
-                                          _searchQuery = '';
-                                          _resetPaging();
-                                        });
-                                      },
+            ClipRect(
+              child: TweenAnimationBuilder<double>(
+                tween: Tween<double>(
+                  begin: _feedHeaderVisible ? 1 : 0,
+                  end: _feedHeaderVisible ? 1 : 0,
+                ),
+                duration: const Duration(milliseconds: 320),
+                curve: Curves.easeInOutCubic,
+                builder: (context, progress, child) {
+                  return Align(
+                    alignment: Alignment.topCenter,
+                    heightFactor: progress,
+                    child: Opacity(
+                      opacity: progress,
+                      child: Transform.translate(
+                        offset: Offset(0, -12 * (1 - progress)),
+                        child: child,
+                      ),
+                    ),
+                  );
+                },
+                child: IgnorePointer(
+                  ignoring: !_feedHeaderVisible,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(
+                          kPagePadding,
+                          12,
+                          kPagePadding,
+                          10,
+                        ),
+                        child: TextField(
+                          controller: _searchController,
+                          focusNode: _searchFocusNode,
+                          onChanged: _onSearchChanged,
+                          onSubmitted: (_) => _saveCurrentSearch(),
+                          decoration: appSearchDecoration(
+                            '어떤 물건을 찾고 계세요?',
+                            suffixIcon: _searchController.text.isEmpty
+                                ? null
+                                : IconButton(
+                                    icon: const Icon(
+                                      Icons.close_rounded,
+                                      color: AppColors.inkMuted,
+                                      size: 18,
                                     ),
-                            ),
+                                    tooltip: '검색어 지우기',
+                                    onPressed: () {
+                                      _searchDebounce?.cancel();
+                                      _searchController.clear();
+                                      setState(() {
+                                        _searchQuery = '';
+                                        _resetPaging();
+                                      });
+                                    },
+                                  ),
                           ),
                         ),
-                        if (_searchFocusNode.hasFocus &&
-                            _searchController.text.isEmpty &&
-                            _recentSearches.isNotEmpty)
-                          SizedBox(
-                            height: scaledControlHeight(context, 38),
-                            child: ListView.separated(
-                              scrollDirection: Axis.horizontal,
-                              padding: const EdgeInsets.fromLTRB(
-                                kPagePadding,
-                                0,
-                                kPagePadding,
-                                6,
-                              ),
-                              itemCount: _recentSearches.length,
-                              separatorBuilder: (context, index) =>
-                                  const SizedBox(width: 6),
-                              itemBuilder: (context, index) {
-                                final query = _recentSearches[index];
-                                return InputChip(
-                                  label: Text(query),
-                                  labelStyle: const TextStyle(
-                                    fontSize: 12.5,
-                                    color: AppColors.inkMuted,
-                                  ),
-                                  backgroundColor: AppColors.surface,
-                                  side: const BorderSide(
-                                    color: AppColors.lineStrong,
-                                  ),
-                                  shape: const StadiumBorder(),
-                                  deleteIconColor: AppColors.inkFaint,
-                                  onPressed: () => _applyRecentSearch(query),
-                                  onDeleted: () => _removeRecentSearch(query),
-                                );
-                              },
+                      ),
+                      if (_searchFocusNode.hasFocus &&
+                          _searchController.text.isEmpty &&
+                          _recentSearches.isNotEmpty)
+                        SizedBox(
+                          height: scaledControlHeight(context, 38),
+                          child: ListView.separated(
+                            scrollDirection: Axis.horizontal,
+                            padding: const EdgeInsets.fromLTRB(
+                              kPagePadding,
+                              0,
+                              kPagePadding,
+                              6,
                             ),
-                          ),
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(
-                            kPagePadding,
-                            2,
-                            kPagePadding,
-                            10,
-                          ),
-                          child: AppSegmented(
-                            labels: const ['전체', '습득물', '분실물'],
-                            selectedIndex: _selectedFilter,
-                            onChanged: (index) {
-                              setState(() {
-                                _selectedFilter = index;
-                                _resetPaging();
-                              });
-                              _refreshCategoryCounts();
+                            itemCount: _recentSearches.length,
+                            separatorBuilder: (context, index) =>
+                                const SizedBox(width: 6),
+                            itemBuilder: (context, index) {
+                              final query = _recentSearches[index];
+                              return InputChip(
+                                label: Text(query),
+                                labelStyle: const TextStyle(
+                                  fontSize: 12.5,
+                                  color: AppColors.inkMuted,
+                                ),
+                                backgroundColor: AppColors.surface,
+                                side: const BorderSide(
+                                  color: AppColors.lineStrong,
+                                ),
+                                shape: const StadiumBorder(),
+                                deleteIconColor: AppColors.inkFaint,
+                                onPressed: () => _applyRecentSearch(query),
+                                onDeleted: () => _removeRecentSearch(query),
+                              );
                             },
                           ),
                         ),
-                        FutureBuilder<Map<String, int>>(
-                          future: _categoryCountsFuture,
-                          builder: (context, countSnapshot) {
-                            return _buildFilterRow(
-                              countSnapshot.data ?? const {},
-                            );
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(
+                          kPagePadding,
+                          2,
+                          kPagePadding,
+                          10,
+                        ),
+                        child: AppSegmented(
+                          labels: const ['전체', '습득물', '분실물'],
+                          selectedIndex: _selectedFilter,
+                          onChanged: (index) {
+                            setState(() {
+                              _selectedFilter = index;
+                              _resetPaging();
+                            });
+                            _refreshCategoryCounts();
                           },
                         ),
-                      ],
-                    )
-                  : const SizedBox(width: double.infinity),
+                      ),
+                      FutureBuilder<Map<String, int>>(
+                        future: _categoryCountsFuture,
+                        builder: (context, countSnapshot) {
+                          return _buildFilterRow(
+                            countSnapshot.data ?? const {},
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                      const Divider(),
+                    ],
+                  ),
+                ),
+              ),
             ),
-            const SizedBox(height: 10),
-            const Divider(),
             Expanded(
               child: _searchQuery.trim().isNotEmpty
                   ? _buildSearchResults(blockedUids)
