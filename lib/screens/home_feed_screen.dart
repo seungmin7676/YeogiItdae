@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 
 import '../models/lost_found_item.dart';
 import '../services/error_messages.dart';
@@ -45,6 +46,7 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
   // 정렬 기준: false = 최신순, true = 조회순(인기순)
   bool _sortByPopular = false;
   bool _ongoingOnly = false;
+  bool _feedHeaderVisible = true;
 
   int _limit = kInitialPageLimit;
   bool _isLoadingMore = false;
@@ -360,226 +362,262 @@ class _HomeFeedScreenState extends State<HomeFeedScreen> {
         ),
         actions: const [NotificationBellButton(), SizedBox(width: 10)],
       ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(
-              kPagePadding,
-              12,
-              kPagePadding,
-              10,
-            ),
-            child: TextField(
-              controller: _searchController,
-              focusNode: _searchFocusNode,
-              onChanged: _onSearchChanged,
-              onSubmitted: (_) => _saveCurrentSearch(),
-              decoration: appSearchDecoration(
-                '어떤 물건을 찾고 계세요?',
-                suffixIcon: _searchController.text.isEmpty
-                    ? null
-                    : IconButton(
-                        icon: const Icon(
-                          Icons.close_rounded,
-                          color: AppColors.inkMuted,
-                          size: 18,
+      body: NotificationListener<UserScrollNotification>(
+        onNotification: (notification) {
+          if (_searchFocusNode.hasFocus ||
+              notification.metrics.axis != Axis.vertical) {
+            return false;
+          }
+
+          if (notification.direction == ScrollDirection.reverse &&
+              _feedHeaderVisible) {
+            setState(() => _feedHeaderVisible = false);
+          } else if (notification.direction == ScrollDirection.forward &&
+              !_feedHeaderVisible) {
+            setState(() => _feedHeaderVisible = true);
+          }
+          return false;
+        },
+        child: Column(
+          children: [
+            AnimatedSize(
+              duration: const Duration(milliseconds: 200),
+              curve: Curves.easeOutCubic,
+              alignment: Alignment.topCenter,
+              child: _feedHeaderVisible
+                  ? Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(
+                            kPagePadding,
+                            12,
+                            kPagePadding,
+                            10,
+                          ),
+                          child: TextField(
+                            controller: _searchController,
+                            focusNode: _searchFocusNode,
+                            onChanged: _onSearchChanged,
+                            onSubmitted: (_) => _saveCurrentSearch(),
+                            decoration: appSearchDecoration(
+                              '어떤 물건을 찾고 계세요?',
+                              suffixIcon: _searchController.text.isEmpty
+                                  ? null
+                                  : IconButton(
+                                      icon: const Icon(
+                                        Icons.close_rounded,
+                                        color: AppColors.inkMuted,
+                                        size: 18,
+                                      ),
+                                      tooltip: '검색어 지우기',
+                                      onPressed: () {
+                                        _searchDebounce?.cancel();
+                                        _searchController.clear();
+                                        setState(() {
+                                          _searchQuery = '';
+                                          _resetPaging();
+                                        });
+                                      },
+                                    ),
+                            ),
+                          ),
                         ),
-                        tooltip: '검색어 지우기',
-                        onPressed: () {
-                          _searchDebounce?.cancel();
-                          _searchController.clear();
-                          setState(() {
-                            _searchQuery = '';
-                            _resetPaging();
-                          });
-                        },
-                      ),
-              ),
-            ),
-          ),
-          if (_searchFocusNode.hasFocus &&
-              _searchController.text.isEmpty &&
-              _recentSearches.isNotEmpty)
-            SizedBox(
-              height: scaledControlHeight(context, 38),
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.fromLTRB(
-                  kPagePadding,
-                  0,
-                  kPagePadding,
-                  6,
-                ),
-                itemCount: _recentSearches.length,
-                separatorBuilder: (context, index) => const SizedBox(width: 6),
-                itemBuilder: (context, index) {
-                  final query = _recentSearches[index];
-                  return InputChip(
-                    label: Text(query),
-                    labelStyle: const TextStyle(
-                      fontSize: 12.5,
-                      color: AppColors.inkMuted,
-                    ),
-                    backgroundColor: AppColors.surface,
-                    side: const BorderSide(color: AppColors.lineStrong),
-                    shape: const StadiumBorder(),
-                    deleteIconColor: AppColors.inkFaint,
-                    onPressed: () => _applyRecentSearch(query),
-                    onDeleted: () => _removeRecentSearch(query),
-                  );
-                },
-              ),
-            ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(
-              kPagePadding,
-              2,
-              kPagePadding,
-              10,
-            ),
-            child: AppSegmented(
-              labels: const ['전체', '습득물', '분실물'],
-              selectedIndex: _selectedFilter,
-              onChanged: (index) {
-                setState(() {
-                  _selectedFilter = index;
-                  _resetPaging();
-                });
-                _refreshCategoryCounts();
-              },
-            ),
-          ),
-          FutureBuilder<Map<String, int>>(
-            future: _categoryCountsFuture,
-            builder: (context, countSnapshot) {
-              return _buildFilterRow(countSnapshot.data ?? const {});
-            },
-          ),
-          const SizedBox(height: 10),
-          const Divider(),
-          Expanded(
-            child: _searchQuery.trim().isNotEmpty
-                ? _buildSearchResults(blockedUids)
-                : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    stream: _filteredQuery.snapshots(),
-                    builder: (context, snapshot) {
-                      if (snapshot.hasError) {
-                        return FeedMessage(
-                          icon: Icons.error_outline_rounded,
-                          title: '목록을 불러오지 못했어요',
-                          text: '네트워크 상태를 확인한 뒤 다시 시도해주세요.',
-                          actionLabel: '다시 시도',
-                          onAction: () => setState(() {}),
-                        );
-                      }
-                      if (!snapshot.hasData) {
-                        return const ItemListSkeleton();
-                      }
-
-                      if (shouldFinishPageLoad(
-                        isLoadingMore: _isLoadingMore,
-                        hasLiveSnapshot:
-                            snapshot.connectionState == ConnectionState.active,
-                      )) {
-                        WidgetsBinding.instance.addPostFrameCallback((_) {
-                          if (mounted) setState(() => _isLoadingMore = false);
-                        });
-                      }
-
-                      final docs = snapshot.data!.docs;
-                      final visibleItems = LostFoundItem.fromDocs(
-                        docs,
-                      ).where((item) => !item.isHidden).toList();
-                      final items = _applySearch(visibleItems, blockedUids);
-                      // 검색 중에도 페이지네이션은 그대로 적용된다 — 현재 페이지에
-                      // 없어도 더 오래된 페이지에 일치하는 글이 있을 수 있으므로
-                      // "더 보기"로 계속 찾을 수 있게 한다.
-                      final canLoadMore = shouldShowLoadMore(
-                        loadedCount: docs.length,
-                        limit: _limit,
-                        isLoadingMore: _isLoadingMore,
-                      );
-
-                      if (items.isEmpty && canLoadMore) {
-                        return FeedMessage(
-                          icon: Icons.search_off_rounded,
-                          title: '아직 찾지 못했어요',
-                          text:
-                              '지금까지 불러온 글에는 일치하는 결과가 없어요.\n더 불러와서 계속 찾아볼 수 있어요.',
-                          actionLabel: _isLoadingMore ? '불러오는 중…' : '더 불러오기',
-                          onAction: _loadNextPage,
-                        );
-                      }
-
-                      if (items.isEmpty) {
-                        final isSearching = _searchQuery.trim().isNotEmpty;
-                        final hasFilter =
-                            _selectedCategory != '전체' ||
-                            _selectedLocation != _kAllLocations ||
-                            _selectedFilter != 0 ||
-                            _ongoingOnly;
-                        if (isSearching) {
-                          // 검색과 필터를 함께 걸어 0건이 된 경우, 진짜로 없는
-                          // 것인지 필터 탓인지 알 수 없으므로 해제할 길을 준다.
-                          if (hasFilter) {
-                            return FeedMessage(
-                              icon: Icons.search_off_rounded,
-                              title: '조건에 맞는 검색 결과가 없어요',
-                              text: '필터를 해제하면 더 많은 결과를 볼 수 있어요.',
-                              actionLabel: '필터 해제하고 검색',
-                              onAction: _clearFilters,
-                            );
-                          }
-                          return const FeedMessage(
-                            icon: Icons.search_off_rounded,
-                            title: '검색 결과가 없어요',
-                            text: '다른 검색어로 다시 찾아보세요.',
-                          );
-                        }
-                        if (hasFilter) {
-                          return FeedMessage(
-                            icon: Icons.filter_alt_off_outlined,
-                            title: '조건에 맞는 글이 없어요',
-                            text: '필터를 바꾸거나 해제하면 더 많은 글을 볼 수 있어요.',
-                            actionLabel: '필터 모두 해제',
-                            onAction: _clearFilters,
-                          );
-                        }
-                        return FeedMessage(
-                          icon: Icons.inbox_outlined,
-                          title: '아직 등록된 글이 없어요',
-                          text: '잃어버렸거나 주운 물건이 있다면\n첫 게시글을 등록해보세요.',
-                          actionLabel: '글 등록하기',
-                          onAction: _goToRegisterScreen,
-                        );
-                      }
-
-                      return RefreshIndicator(
-                        color: AppColors.primary,
-                        onRefresh: _refresh,
-                        child: ListView.separated(
-                          padding: const EdgeInsets.only(bottom: 100),
-                          itemCount: items.length + (canLoadMore ? 1 : 0),
-                          separatorBuilder: (context, index) => const Divider(),
-                          itemBuilder: (context, index) {
-                            if (index == items.length) {
-                              return LoadMoreButton(
-                                isLoading: _isLoadingMore,
-                                onPressed: _loadNextPage,
-                              );
-                            }
-                            final item = items[index];
-                            return ItemCard(
-                              item: item,
-                              onTap: () => _showDetail(item),
+                        if (_searchFocusNode.hasFocus &&
+                            _searchController.text.isEmpty &&
+                            _recentSearches.isNotEmpty)
+                          SizedBox(
+                            height: scaledControlHeight(context, 38),
+                            child: ListView.separated(
+                              scrollDirection: Axis.horizontal,
+                              padding: const EdgeInsets.fromLTRB(
+                                kPagePadding,
+                                0,
+                                kPagePadding,
+                                6,
+                              ),
+                              itemCount: _recentSearches.length,
+                              separatorBuilder: (context, index) =>
+                                  const SizedBox(width: 6),
+                              itemBuilder: (context, index) {
+                                final query = _recentSearches[index];
+                                return InputChip(
+                                  label: Text(query),
+                                  labelStyle: const TextStyle(
+                                    fontSize: 12.5,
+                                    color: AppColors.inkMuted,
+                                  ),
+                                  backgroundColor: AppColors.surface,
+                                  side: const BorderSide(
+                                    color: AppColors.lineStrong,
+                                  ),
+                                  shape: const StadiumBorder(),
+                                  deleteIconColor: AppColors.inkFaint,
+                                  onPressed: () => _applyRecentSearch(query),
+                                  onDeleted: () => _removeRecentSearch(query),
+                                );
+                              },
+                            ),
+                          ),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(
+                            kPagePadding,
+                            2,
+                            kPagePadding,
+                            10,
+                          ),
+                          child: AppSegmented(
+                            labels: const ['전체', '습득물', '분실물'],
+                            selectedIndex: _selectedFilter,
+                            onChanged: (index) {
+                              setState(() {
+                                _selectedFilter = index;
+                                _resetPaging();
+                              });
+                              _refreshCategoryCounts();
+                            },
+                          ),
+                        ),
+                        FutureBuilder<Map<String, int>>(
+                          future: _categoryCountsFuture,
+                          builder: (context, countSnapshot) {
+                            return _buildFilterRow(
+                              countSnapshot.data ?? const {},
                             );
                           },
                         ),
-                      );
-                    },
-                  ),
-          ),
-        ],
+                      ],
+                    )
+                  : const SizedBox(width: double.infinity),
+            ),
+            const SizedBox(height: 10),
+            const Divider(),
+            Expanded(
+              child: _searchQuery.trim().isNotEmpty
+                  ? _buildSearchResults(blockedUids)
+                  : StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                      stream: _filteredQuery.snapshots(),
+                      builder: (context, snapshot) {
+                        if (snapshot.hasError) {
+                          return FeedMessage(
+                            icon: Icons.error_outline_rounded,
+                            title: '목록을 불러오지 못했어요',
+                            text: '네트워크 상태를 확인한 뒤 다시 시도해주세요.',
+                            actionLabel: '다시 시도',
+                            onAction: () => setState(() {}),
+                          );
+                        }
+                        if (!snapshot.hasData) {
+                          return const ItemListSkeleton();
+                        }
+
+                        if (shouldFinishPageLoad(
+                          isLoadingMore: _isLoadingMore,
+                          hasLiveSnapshot:
+                              snapshot.connectionState ==
+                              ConnectionState.active,
+                        )) {
+                          WidgetsBinding.instance.addPostFrameCallback((_) {
+                            if (mounted) setState(() => _isLoadingMore = false);
+                          });
+                        }
+
+                        final docs = snapshot.data!.docs;
+                        final visibleItems = LostFoundItem.fromDocs(
+                          docs,
+                        ).where((item) => !item.isHidden).toList();
+                        final items = _applySearch(visibleItems, blockedUids);
+                        // 검색 중에도 페이지네이션은 그대로 적용된다 — 현재 페이지에
+                        // 없어도 더 오래된 페이지에 일치하는 글이 있을 수 있으므로
+                        // "더 보기"로 계속 찾을 수 있게 한다.
+                        final canLoadMore = shouldShowLoadMore(
+                          loadedCount: docs.length,
+                          limit: _limit,
+                          isLoadingMore: _isLoadingMore,
+                        );
+
+                        if (items.isEmpty && canLoadMore) {
+                          return FeedMessage(
+                            icon: Icons.search_off_rounded,
+                            title: '아직 찾지 못했어요',
+                            text:
+                                '지금까지 불러온 글에는 일치하는 결과가 없어요.\n더 불러와서 계속 찾아볼 수 있어요.',
+                            actionLabel: _isLoadingMore ? '불러오는 중…' : '더 불러오기',
+                            onAction: _loadNextPage,
+                          );
+                        }
+
+                        if (items.isEmpty) {
+                          final isSearching = _searchQuery.trim().isNotEmpty;
+                          final hasFilter =
+                              _selectedCategory != '전체' ||
+                              _selectedLocation != _kAllLocations ||
+                              _selectedFilter != 0 ||
+                              _ongoingOnly;
+                          if (isSearching) {
+                            // 검색과 필터를 함께 걸어 0건이 된 경우, 진짜로 없는
+                            // 것인지 필터 탓인지 알 수 없으므로 해제할 길을 준다.
+                            if (hasFilter) {
+                              return FeedMessage(
+                                icon: Icons.search_off_rounded,
+                                title: '조건에 맞는 검색 결과가 없어요',
+                                text: '필터를 해제하면 더 많은 결과를 볼 수 있어요.',
+                                actionLabel: '필터 해제하고 검색',
+                                onAction: _clearFilters,
+                              );
+                            }
+                            return const FeedMessage(
+                              icon: Icons.search_off_rounded,
+                              title: '검색 결과가 없어요',
+                              text: '다른 검색어로 다시 찾아보세요.',
+                            );
+                          }
+                          if (hasFilter) {
+                            return FeedMessage(
+                              icon: Icons.filter_alt_off_outlined,
+                              title: '조건에 맞는 글이 없어요',
+                              text: '필터를 바꾸거나 해제하면 더 많은 글을 볼 수 있어요.',
+                              actionLabel: '필터 모두 해제',
+                              onAction: _clearFilters,
+                            );
+                          }
+                          return FeedMessage(
+                            icon: Icons.inbox_outlined,
+                            title: '아직 등록된 글이 없어요',
+                            text: '잃어버렸거나 주운 물건이 있다면\n첫 게시글을 등록해보세요.',
+                            actionLabel: '글 등록하기',
+                            onAction: _goToRegisterScreen,
+                          );
+                        }
+
+                        return RefreshIndicator(
+                          color: AppColors.primary,
+                          onRefresh: _refresh,
+                          child: ListView.separated(
+                            padding: const EdgeInsets.only(bottom: 100),
+                            itemCount: items.length + (canLoadMore ? 1 : 0),
+                            separatorBuilder: (context, index) =>
+                                const Divider(),
+                            itemBuilder: (context, index) {
+                              if (index == items.length) {
+                                return LoadMoreButton(
+                                  isLoading: _isLoadingMore,
+                                  onPressed: _loadNextPage,
+                                );
+                              }
+                              final item = items[index];
+                              return ItemCard(
+                                item: item,
+                                onTap: () => _showDetail(item),
+                              );
+                            },
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _goToRegisterScreen,
